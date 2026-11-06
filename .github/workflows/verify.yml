@@ -14,3 +14,8 @@ jobs:
           python3 install.py --ci --source-commit "$GITHUB_SHA" --apply
       - name: Verify fixture persistence and isolated restores
         run: python3 verify.py
+      - name: Exercise the scoped memory update on the existing fixture project
+        run: |
+          docker update --memory 1280m "$(docker compose ps -q flow)" >/dev/null
+          python3 resize_flow.py --ci --source-commit "$GITHUB_SHA" --from-commit "$GITHUB_SHA" --apply
+          test "$(docker compose exec -T postgres psql -U postgres -d flow -Atc "SELECT count(*) FROM flow WHERE name='PilotFixture0001'")" = 1

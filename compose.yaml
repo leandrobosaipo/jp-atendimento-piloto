@@ -67,7 +67,7 @@ services:
   flow:
     <<: *base
     image: langflowai/langflow:1.13.1@sha256:643d78228cd148be70e52a860dd3456c834a070c98c81b354f713908d40949f8
-    mem_limit: 1280m
+    mem_limit: 1536m
     env_file: [./private/flow.env]
     environment:
       LANGFLOW_AUTO_LOGIN: "false"
