@@ -1,5 +1,5 @@
 import unittest
-from policy import classify,service_price
+from policy import classify,service_price,prepare
 
 class Test(unittest.TestCase):
     def test_precedence_and_ambiguous_art(self):
@@ -15,5 +15,10 @@ class Test(unittest.TestCase):
         opts={"intent":"auto","service":"","professional":"","date":""}
         self.assertEqual(classify("Preço de corte e barba com Alex",opts,cfg)[:3],("price","haircut_beard","alex"))
         self.assertEqual(classify("Quanto custa coloração de prótese?",opts,cfg)[0],"clarify")
+    def test_approved_table_can_be_shown_while_quotes_are_held(self):
+        opts={"intent":"auto","service":"","professional":"","date":""}
+        c={"price_source_policy":"pending_user_resolution"}
+        _,text,decision,group=prepare("Mostre a tabela de serviços",opts,{},c,None)
+        self.assertEqual((decision,group),("answer","servicos"));self.assertIn("diferem",text)
 
 if __name__=="__main__":unittest.main()

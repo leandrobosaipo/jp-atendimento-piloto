@@ -62,8 +62,7 @@ def prepare(question,options,cfg,catalog,query):
         return context,text,"answer",group
     if intent=="services_art":
         context["source"]="approved_artwork";context["price_source_policy"]=catalog["price_source_policy"]
-        if precedence(catalog) in ("pending","human_review"):return context,"A tabela apresenta diferenças em relação ao cadastro. A equipe precisa revisar os valores antes de compartilhar a arte.","handoff",None
-        return context,"Segue a tabela de serviços aprovada para esta conversa fictícia. Valores divergentes dependem da fonte definida para o piloto.","answer",group
+        return context,"Segue a tabela de serviços aprovada para esta conversa fictícia. Alguns valores da arte diferem do AppBarber. Para um orçamento, consulte o serviço específico.","answer",group
     if not service or service not in cfg.get("services",{}):return context,"Para consultar o cadastro correto, escolha um serviço do piloto.","handoff",None
     op="prices" if intent=="price" else "availability"
     if op=="availability" and (not date or not prof):return context,"Para consultar a disponibilidade, escolha um profissional e um dia. Nenhum horário foi reservado.","handoff",None
