@@ -1,0 +1,30 @@
+[Unit]
+Description=Isolated pilot conversations and bounded read-only facts
+After=docker.service atendimento-piloto-ai.socket
+Wants=docker.service atendimento-piloto-ai.socket
+[Service]
+User=delladmin
+Group=delladmin
+ExecStart=/usr/bin/python3 /usr/local/libexec/atendimento-piloto-integracao/service.py
+RuntimeDirectory=atendimento-piloto-integracao
+RuntimeDirectoryMode=0700
+StateDirectory=atendimento-piloto-integracao
+StateDirectoryMode=0700
+LoadCredential=runtime:/etc/atendimento-piloto-integracao/runtime.json
+LoadCredential=manifest:/etc/atendimento-piloto-integracao/assets.json
+LoadCredential=appbarber:/etc/atendimento-piloto-integracao/appbarber-readonly.json
+UMask=0077
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectHome=yes
+ProtectSystem=strict
+ProtectKernelTunables=yes
+ProtectControlGroups=yes
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+CapabilityBoundingSet=
+Restart=on-failure
+RestartSec=5
+MemoryMax=128M
+TasksMax=28
+[Install]
+WantedBy=multi-user.target

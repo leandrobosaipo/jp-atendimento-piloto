@@ -1,0 +1,9 @@
+<!doctype html>
+<html lang="pt-BR"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Conversas fictícias</title><link rel="stylesheet" href="style.css"><script defer src="../base1/cockpit.js"></script><script defer src="app.js"></script></head>
+<body><main><header><span>Laboratório privado</span><h1>Conversas fictícias</h1><p>Teste a conversa no Chatwoot com a IA, as tabelas aprovadas e consultas de leitura ao AppBarber. Use apenas situações fictícias.</p></header>
+<section class="bar"><label>Cliente de teste <select id="actor"><option value="A">Cliente fictício A</option><option value="B">Cliente fictício B</option><option value="C">Cliente fictício C</option></select></label><button id="refresh">Atualizar histórico</button></section>
+<div id="messages" aria-live="polite" aria-label="Histórico"></div>
+<form><label for="question">Mensagem do cliente fictício</label><textarea id="question" maxlength="600" rows="3" required placeholder="Ex.: quanto custa a manutenção?"></textarea>
+<details><summary>Opções de consulta</summary><div class="grid"><label>Assunto<select id="intent"><option value="auto">Identificar pelo texto</option><option value="price">Preço de um serviço</option><option value="availability">Disponibilidade</option><option value="services_art">Tabela de serviços</option><option value="club_art">Tabela do Clube</option></select></label>
+<label>Serviço<select id="service"><option value="">Pelo texto</option></select></label><label>Profissional<select id="professional"><option value="">Pelo texto</option></select></label><label>Data<input id="date" type="date"></label></div></details>
+<div class="bar"><span id="status" role="status"></span><button id="send" type="submit">Enviar ao piloto</button></div></form><a href="/atendimentoteste" target="_top">Abrir teste direto da IA</a></main></body></html>

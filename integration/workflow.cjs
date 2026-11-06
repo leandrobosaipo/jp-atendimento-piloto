@@ -1,0 +1,12 @@
+const {createRequire}=require('node:module');
+const {workflow,node,trigger,newCredential}=createRequire('/usr/local/lib/node_modules/n8n/package.json')('@n8n/workflow-sdk');
+const cfg=JSON.parse(require('node:fs').readFileSync(0,'utf8'));
+if(!/^http:\/\/(?:\d{1,3}\.){3}\d{1,3}:19735$/.test(cfg.bridge))throw Error('Invalid pilot bridge');
+const cred=k=>({httpHeaderAuth:newCredential(cfg[k].name,cfg[k].id)});
+const hook=trigger({type:'n8n-nodes-base.webhook',version:2.1,config:{name:'Incoming Chatwoot record',position:[0,0],credentials:cred('hook'),parameters:{httpMethod:'POST',path:'pilot-integrated-v1',authentication:'headerAuth',responseMode:'lastNode',responseData:'firstEntryJson',options:{}}}});
+const step=(name,op,x,body)=>node({type:'n8n-nodes-base.httpRequest',version:4.3,config:{name,position:[x,0],credentials:cred('adapter'),retryOnFail:false,parameters:{method:'POST',url:cfg.bridge+'/'+op,authentication:'genericCredentialType',genericAuthType:'httpHeaderAuth',sendBody:true,specifyBody:'json',jsonBody:body,options:{timeout:85000,redirect:{redirect:{followRedirects:false}}}}}});
+const a=step('Verify and reserve incoming message','claim',240,'={{ {request:$json.body.request,incoming:$json.body.incoming} }}');
+const b=step('Read approved facts and run the pilot assistant','plan',500,'={{ {request:$json.request,incoming:$json.incoming} }}');
+const c=step('Record one reply and verify its attachment','deliver',760,'={{ {request:$json.request,incoming:$json.incoming} }}');
+const w=workflow('pilot-integrated-v1','Integrated pilot - fictitious conversations').add(hook).to(a).to(b).to(c).toJSON();
+process.stdout.write(JSON.stringify({name:'Integrated pilot - fictitious conversations',nodes:w.nodes,connections:w.connections,settings:{executionOrder:'v1',timezone:'America/Cuiaba',saveDataSuccessExecution:'none',saveDataErrorExecution:'none',saveExecutionProgress:false,saveManualExecutions:false}}));

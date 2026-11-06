@@ -26,3 +26,17 @@ jobs:
         run: |
           python3 configure_flows.py --ci --source-commit "$GITHUB_SHA" --from-commit "$GITHUB_SHA" --apply
           python3 verify_flows.py
+      - name: Verify integrated Chatwoot, n8n, AI gateway and image storage
+        run: |
+          python3 integration/test_provider.py
+          sudo useradd --system --user-group --no-create-home delladmin
+          sudo env GITHUB_ACTIONS=true GITHUB_SHA="$GITHUB_SHA" python3 integration/ci_fixtures.py
+          kb=$(sudo sha256sum private/openai-inbox/kb.json | cut -d' ' -f1)
+          sudo env GITHUB_ACTIONS=true python3 assistant_panel/install.py --ci --source-commit "$GITHUB_SHA" --kb-sha256 "$kb" --apply
+          sudo install -d -m 755 /usr/local/libexec/ai-ci-fixture /etc/systemd/system/atendimento-piloto-ai.service.d /etc/systemd/system/atendimento-piloto-integracao.service.d
+          sudo install -m 755 integration/ci_server.py integration/ci_gateway.py /usr/local/libexec/ai-ci-fixture/
+          printf '[Service]\nEnvironment=PILOT_ACTIONS_FIXTURE=yes\nExecStart=\nExecStart=/usr/bin/python3 /usr/local/libexec/ai-ci-fixture/ci_gateway.py\n' | sudo tee /etc/systemd/system/atendimento-piloto-ai.service.d/90-ci.conf >/dev/null
+          printf '[Service]\nEnvironment=PILOT_ACTIONS_FIXTURE=yes\nExecStart=\nExecStart=/usr/bin/python3 /usr/local/libexec/ai-ci-fixture/ci_server.py\n' | sudo tee /etc/systemd/system/atendimento-piloto-integracao.service.d/90-ci.conf >/dev/null
+          assets=$(sudo sha256sum private/integration-inbox/assets.json | cut -d' ' -f1)
+          sudo env GITHUB_ACTIONS=true python3 integration/install.py --ci --source-commit "$GITHUB_SHA" --manifest-sha256 "$assets" --apply
+          sudo env GITHUB_ACTIONS=true python3 integration/verify.py --ci

@@ -1,0 +1,1 @@
+{"version":1,"requires":{"cockpit":"300"},"content-security-policy":"img-src 'self' blob:","menu":{"index":{"label":"Conversas fictícias","order":29,"path":"index.html"}}}
