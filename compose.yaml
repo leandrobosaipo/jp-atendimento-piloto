@@ -60,7 +60,6 @@ services:
     mem_limit: 1024m
     entrypoint: docker/entrypoints/rails.sh
     command: [bundle, exec, rails, s, -p, "3000", -b, 0.0.0.0]
-    ports: ["127.0.0.1:13300:3000"]
   worker:
     <<: *chat
     mem_limit: 768m
@@ -77,7 +76,6 @@ services:
       DO_NOT_TRACK: "true"
       LANGFLOW_CONFIG_DIR: /app/langflow
     volumes: [flow-files:/app/langflow]
-    ports: ["127.0.0.1:17860:7860"]
     depends_on:
       postgres: {condition: service_healthy}
   clock:
@@ -102,7 +100,6 @@ services:
       EXECUTIONS_DATA_SAVE_MANUAL_EXECUTIONS: "false"
       N8N_ENFORCE_SETTINGS_FILE_PERMISSIONS: "true"
     volumes: [clock-files:/home/node/.n8n]
-    ports: ["127.0.0.1:15678:5678"]
     depends_on:
       postgres: {condition: service_healthy}
 networks:

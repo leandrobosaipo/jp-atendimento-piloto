@@ -15,6 +15,11 @@ ROOT = Path(__file__).resolve().parent
 SECRET = ROOT / "private"
 PROJECT = "atendimento-piloto"
 PORTS = {"chat": (13300, "/health"), "flow": (17860, "/health_check"), "clock": (15678, "/healthz/readiness")}
+UNITS = {
+    "forward.py": "/usr/local/libexec/atendimento-piloto-forward",
+    "atendimento-piloto@.socket": "/etc/systemd/system/atendimento-piloto@.socket",
+    "atendimento-piloto@.service": "/etc/systemd/system/atendimento-piloto@.service",
+}
 
 def run(*args, timeout=900, quiet=False):
     result = subprocess.run(args, cwd=ROOT, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=timeout)
@@ -69,6 +74,8 @@ def main():
             raise SystemExit("Pilot resources already exist. Reconcile the existing release.")
     if SECRET.exists():
         raise SystemExit("Private directory already exists. Reconcile first.")
+    if any(os.path.lexists(path) for path in UNITS.values()) or not Path("/usr/lib/systemd/systemd-socket-proxyd").is_file():
+        raise SystemExit("Unexpected systemd unit state")
     for port,_ in PORTS.values():
         with socket.socket() as sock:
             sock.bind(("127.0.0.1",port))
@@ -84,6 +91,12 @@ def main():
     dc("pull",quiet=True,timeout=1800)
     if shutil.disk_usage("/").free < 3*2**30:
         raise RuntimeError("Insufficient space after pull, stopped before creating services")
+    privileged = [] if os.geteuid()==0 else ["sudo", "-n"]
+    for name, path in UNITS.items():
+        run(*privileged,"install","-D","-m","755" if name=="forward.py" else "644",str(ROOT/"units"/name),path)
+    run(*privileged,"systemctl","daemon-reload")
+    for port,_ in PORTS.values():
+        run(*privileged,"systemctl","enable","--now",f"atendimento-piloto@{port}.socket")
     dc("up","-d","--wait","postgres","redis")
     print("Preparing Chatwoot schema",flush=True)
     dc("run","--name",PROJECT+"-schema","--rm","--no-deps","chat","bundle","exec","rails","db:chatwoot_prepare")
