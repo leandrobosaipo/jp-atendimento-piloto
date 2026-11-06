@@ -3,6 +3,7 @@ import http.cookiejar
 import hashlib
 import json
 import os
+import secrets
 import subprocess
 import urllib.error
 import urllib.parse
@@ -42,8 +43,23 @@ def main():
     # Run the Rails console with the web/worker paused to avoid overlapping Rails heaps.
     dc("stop","worker","chat")
     try:
-        ruby='a=Account.create!(name: "PilotFixture0001"); a.contacts.create!(name: "Fictitious contact", identifier: "PilotFixture0001"); puts "created"'
-        dc("run","--rm","--no-deps","chat","bundle","exec","rails","runner",ruby)
+        chat_password = "Aa7!" + secrets.token_hex(20)
+        with (SECRET/"chat-owner").open("x") as f:
+            f.write(chat_password)
+        ruby = """
+          password = STDIN.readline.chomp
+          account = Account.create!(name: "PilotFixture0001")
+          user = User.new(name: "Pilot Admin", email: "fixture@example.invalid", password: password)
+          user.skip_confirmation!
+          user.save!
+          AccountUser.create!(account: account, user: user, role: :administrator)
+          account.contacts.create!(name: "Fictitious contact", identifier: "PilotFixture0001")
+        """
+        cmd = ["docker","compose","run","--rm","-T","--no-deps","chat","bundle","exec","rails","runner",ruby]
+        p = subprocess.run(cmd, cwd=ROOT, input=(chat_password+"\n").encode(), capture_output=True)
+        if p.returncode:
+            (evidence/"chat-bootstrap-error.log").write_bytes(p.stderr)
+            raise RuntimeError("Chatwoot fixture bootstrap failed")
     finally:
         dc("up","-d","--no-deps","chat","worker")
     wait_http("chat")
@@ -51,7 +67,6 @@ def main():
     token=request(client,17860,"/api/v1/login",{"username":"fixture","password":flowpw},form=True)["access_token"]
     flow=request(client,17860,"/api/v1/flows/",{"name":MARKER,"data":{"nodes":[],"edges":[]}},token=token)
     assert flow["name"] == MARKER
-    import secrets
     password="Aa7!"+secrets.token_hex(20)
     with (SECRET/"n8n-owner").open("x") as f:
         f.write(password)
