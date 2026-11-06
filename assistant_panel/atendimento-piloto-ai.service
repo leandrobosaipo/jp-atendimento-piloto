@@ -1,0 +1,20 @@
+[Unit]
+Description=Private pilot conversation gateway
+[Service]
+ExecStart=/usr/bin/python3 -I /usr/local/libexec/atendimento-piloto-ai/gateway.py
+DynamicUser=yes
+StateDirectory=atendimento-piloto-ai
+StateDirectoryMode=0700
+LoadCredential=provider-key:/etc/atendimento-piloto-ai/openai.key
+LoadCredential=knowledge:/etc/atendimento-piloto-ai/kb.json
+UMask=0077
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+ProtectKernelTunables=yes
+ProtectControlGroups=yes
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+MemoryMax=96M
+TasksMax=8
+CapabilityBoundingSet=

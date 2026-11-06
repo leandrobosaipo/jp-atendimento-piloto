@@ -1,5 +1,8 @@
 name: Validate isolated pilot
-on: [push, workflow_dispatch]
+on:
+  push:
+    paths-ignore: ["assistant_panel/**", ".github/workflows/assistant.yml"]
+  workflow_dispatch:
 permissions: {contents: read}
 jobs:
   pilot:

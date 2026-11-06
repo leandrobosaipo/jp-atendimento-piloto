@@ -1,0 +1,9 @@
+[Unit]
+Description=Private Cockpit test conversation
+[Socket]
+ListenStream=/run/atendimento-piloto-ai.sock
+SocketMode=0600
+SocketUser=delladmin
+Backlog=4
+[Install]
+WantedBy=sockets.target
