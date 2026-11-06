@@ -13,7 +13,8 @@ result = ActiveRecord::Base.transaction do
   unknown = account.contacts.create!(name: 'Unidentified synthetic input', identifier: 'PilotIdentityReview0001')
   ids = [known, unknown].map do |contact|
     ci = ContactInbox.create!(contact: contact, inbox: inbox, source_id: SecureRandom.uuid)
-    Conversation.create!(account: account, inbox: inbox, contact: contact, contact_inbox: ci).display_id
+    # The account-scoped display ID is populated by a PostgreSQL trigger.
+    Conversation.create!(account: account, inbox: inbox, contact: contact, contact_inbox: ci).reload.display_id
   end
   { accountId: account.id, knownConversation: ids[0], reviewConversation: ids[1], inboxId: inbox.id, chatToken: agent.access_token.token }
 end

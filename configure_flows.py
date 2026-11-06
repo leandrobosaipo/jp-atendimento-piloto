@@ -25,7 +25,8 @@ def process(args,stdin=""):
         # Do not log stdout: bootstrap output may contain a scoped token.
         safe=re.findall(r"(?:[A-Za-z0-9_:]+(?:Error|Exception))", p.stderr)
         (PRIVATE/"last-process-error").write_text(p.stderr)
-        raise RuntimeError("Scoped command failed: "+",".join(safe[-3:]))
+        reason=next((x for x in ("Invalid Chatwoot ID","Expected local flow ID","MODULE_NOT_FOUND") if x in p.stderr),None)
+        raise RuntimeError("Scoped command failed: "+(reason or ",".join(safe[-3:]) or "private diagnostic"))
     return p.stdout
 
 class Local:
@@ -94,6 +95,8 @@ def configure(args):
     print("Bootstrapping synthetic Chatwoot inbox",flush=True)
     out=process(["docker","compose","run","--rm","-T","--no-deps","chat","bundle","exec","rails","runner","-"],ruby)
     cfg.update(json.loads(next(l.partition("=")[2] for l in out.splitlines() if l.startswith("PILOT_CONFIG="))))
+    if not all(type(cfg[k]) is int and cfg[k]>0 for k in ("accountId","knownConversation","reviewConversation","inboxId")):
+        raise RuntimeError("Chatwoot bootstrap did not return all account-scoped IDs")
     print("Registering model-free Langflow graph",flush=True)
     lf=Local(17860)
     password=next(l.partition("=")[2] for l in (SECRET/"flow.env").read_text().splitlines() if l.startswith("LANGFLOW_SUPERUSER_PASSWORD="))
