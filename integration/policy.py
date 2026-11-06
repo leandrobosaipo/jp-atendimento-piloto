@@ -43,6 +43,13 @@ def classify(question,options,cfg):
 def group_for(intent):
     return "clube-jp" if intent=="club_art" else "servicos" if intent in ("price","services_art") else None
 
+def precedence(catalog):
+    value=catalog.get("price_source_policy")
+    if value in ("appbarber","api"):return "api"
+    if value in ("artwork","arte"):return "artwork"
+    if value=="human_review":return "human_review"
+    return "pending"
+
 def prepare(question,options,cfg,catalog,query):
     intent,service,prof,date=classify(question,options,cfg)
     context={"category":intent};group=group_for(intent)
@@ -55,7 +62,7 @@ def prepare(question,options,cfg,catalog,query):
         return context,text,"answer",group
     if intent=="services_art":
         context["source"]="approved_artwork";context["price_source_policy"]=catalog["price_source_policy"]
-        if catalog["price_source_policy"]=="pending_user_resolution":return context,"A tabela apresenta diferenças em relação ao cadastro. A equipe precisa revisar os valores antes de compartilhar a arte.","handoff",None
+        if precedence(catalog) in ("pending","human_review"):return context,"A tabela apresenta diferenças em relação ao cadastro. A equipe precisa revisar os valores antes de compartilhar a arte.","handoff",None
         return context,"Segue a tabela de serviços aprovada para esta conversa fictícia. Valores divergentes dependem da fonte definida para o piloto.","answer",group
     if not service or service not in cfg.get("services",{}):return context,"Para consultar o cadastro correto, escolha um serviço do piloto.","handoff",None
     op="prices" if intent=="price" else "availability"
@@ -75,8 +82,15 @@ def service_price(context,service,catalog,group):
     cents=context["price_cents"];base=context["name"]
     # Artwork names and canonical service mapping are supplied privately with the approved catalog.
     recorded=catalog.get("service_price_by_key",{}).get(service)
+    if recorded is None:
+        return context,f"{base}: {currency(cents)} no cadastro do AppBarber. A arte não tem correspondência inequívoca com esse item.","answer",None
     if recorded is not None and int(recorded)!=cents:
         context["artwork_price_cents"]=int(recorded);context["divergence"]=True
-        if catalog["price_source_policy"]=="pending_user_resolution":
+        rule=precedence(catalog);context["applied_price_source"]=rule
+        if rule in ("pending","human_review"):
             return context,"Há diferença entre o cadastro e a tabela. O valor precisa de confirmação pela equipe.","handoff",None
+        if rule=="artwork":
+            return context,f"Na tabela aprovada para este teste, {base}: {currency(int(recorded))}. O cadastro consultado apresenta um valor diferente; neste piloto vale a tabela aprovada.","answer",group
+        # The actual sealed image contains a different numeric value; do not attach a misleading price table.
+        return context,f"{base}: {currency(cents)} no cadastro do AppBarber consultado agora. O cadastro é a fonte definida para este teste.","answer",None
     return context,f"{base}: {currency(cents)} no cadastro do AppBarber consultado agora. A arte é a tabela aprovada do piloto.","answer",group

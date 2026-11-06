@@ -11,7 +11,7 @@ def main(a):
     for art in catalog["assets"]:
         b=(pathlib.Path("/etc/atendimento-piloto-integracao/assets")/art["filename"]).read_bytes();assert hashlib.sha256(b).hexdigest()==art["sha256"] and len(b)==art["bytes"]
     day=str(dt.datetime.now(ZoneInfo("America/Cuiaba")).date()+dt.timedelta(days=1))
-    tests=[("general","A","Como funciona a manutenção da peça?","auto","","",""),("service","A","Qual o preço da manutenção?","price","maintenance","",""),("club","B","Quero ver a tabela do clube.","club_art","","",""),("availability","C","Quais horários de manutenção estão disponíveis amanhã?","availability","maintenance","fixture" if a.ci else "pedro",day)]
+    tests=[("general","A","Como funciona a manutenção da peça?","auto","","",""),("service","A","Qual o preço da manutenção?","price","maintenance","",""),("club","B","Quero ver a tabela do clube.","club_art","","",""),("availability","B","Quais horários de manutenção estão disponíveis amanhã?","availability","maintenance","fixture" if a.ci else "pedro",day)]
     results={}
     for case,actor,q,op,srv,prof,date in tests:
         rid=str(uuid.uuid5(uuid.NAMESPACE_URL,"isolated-integrated-test-v1-"+case))

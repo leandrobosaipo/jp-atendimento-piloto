@@ -29,6 +29,7 @@ jobs:
       - name: Verify integrated Chatwoot, n8n, AI gateway and image storage
         run: |
           python3 integration/test_provider.py
+          python3 integration/test_policy.py
           sudo useradd --system --user-group --no-create-home delladmin
           sudo env GITHUB_ACTIONS=true GITHUB_SHA="$GITHUB_SHA" python3 integration/ci_fixtures.py
           kb=$(sudo sha256sum private/openai-inbox/kb.json | cut -d' ' -f1)
