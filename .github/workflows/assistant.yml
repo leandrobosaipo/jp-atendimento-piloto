@@ -29,3 +29,9 @@ jobs:
           printf '{"op":"info"}' | sudo -u nobody /usr/local/libexec/atendimento-piloto-ai/client.py | jq -e '.code=="unavailable"'
           printf '{"op":"info"}' | sudo -u delladmin /usr/local/libexec/atendimento-piloto-ai/client.py | jq -e '.model=="gpt-6-luna" and .daily_requests==0'
           sudo env GITHUB_ACTIONS=true python3 assistant_panel/update.py --ci --source-commit "$GITHUB_SHA" --from-commit "$GITHUB_SHA" --apply
+          tmp=$(mktemp)
+          sudo cat private/openai-inbox/kb.json | sed 's/"version":"fixture"/"version":"fixture2"/' > "$tmp"
+          new=$(sha256sum "$tmp" | cut -d' ' -f1)
+          sudo install -m 600 "$tmp" "private/openai-inbox/kb-$new.json"
+          sudo env GITHUB_ACTIONS=true python3 assistant_panel/update_knowledge.py --ci --source-commit "$GITHUB_SHA" --expected-old "$hash" --expected-new "$new" --apply
+          printf '{"op":"info"}' | sudo -u delladmin /usr/local/libexec/atendimento-piloto-ai/client.py | jq -e '.kb_version=="fixture2" and .daily_requests==0'
