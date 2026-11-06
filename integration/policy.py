@@ -22,14 +22,22 @@ def classify(question,options,cfg):
         aliases={"maintenance":"manutencao","haircut":"corte","styling":"penteado","taping":"fitagem","adjustment":"reajuste","hydration":"hidratacao","eyebrows":"sobrancelha","simple_beard":"barba simples","beard":"barba","application":"aplicacao","coloring":"coloracao"}
         found=[k for k,alias in aliases.items() if k in cfg.get("services",{}) and re.search(r"\b"+alias+r"\b",q)]
         if "simple_beard" in found and "beard" in found:found.remove("beard")
+        if "haircut_beard" in cfg.get("services",{}) and re.search(r"\bcorte\s*(?:e|\+)\s*barba\b",q):found=["haircut_beard"]
         if len(found)==1:service=found[0]
     if not prof:
-        matches=[k for k,v in cfg.get("professionals",{}).items() if re.search(r"\b"+re.escape(norm(v["name"]))+r"\b",q)]
+        pros=cfg.get("professionals",{})
+        first=[norm(v["name"]).split()[0] for v in pros.values()]
+        matches=[]
+        for k,v in pros.items():
+            n=norm(v["name"]);short=n.split()[0]
+            names={k,n}|({short} if first.count(short)==1 else set())
+            if any(re.search(r"\b"+re.escape(a)+r"\b",q) for a in names):matches.append(k)
         if len(matches)==1:prof=matches[0]
     if not date:
         today=dt.datetime.now(ZoneInfo("America/Cuiaba")).date()
         given=re.search(r"\b\d{4}-\d{2}-\d{2}\b",q)
         date=given.group() if given else str(today+dt.timedelta(days=1)) if "amanha" in q else str(today) if "hoje" in q else ""
+    if intent=="price" and ((service=="coloring" and re.search(r"barba|protese",q)) or (service=="hydration" and "intens" in q) or (service=="eyebrows" and "navalha" in q)):intent="clarify"
     return intent,service,prof,date
 
 def group_for(intent):
@@ -39,6 +47,7 @@ def prepare(question,options,cfg,catalog,query):
     intent,service,prof,date=classify(question,options,cfg)
     context={"category":intent};group=group_for(intent)
     if intent=="sensitive":return context,"Revisão humana necessária. Esta solicitação permanece na fila privada do teste.","handoff",None
+    if intent=="clarify":return context,"O cadastro genérico não identifica esse serviço específico com segurança. A equipe precisa confirmar qual item corresponde ao pedido.","handoff",None
     if intent=="chat":return context,None,None,None
     if intent=="club_art":
         plans=catalog["club_plans"];context={"category":"club","plans":[{"name":x["name"],"visits_per_month":x["visits_per_month"],"price_cents":x["price_cents"]} for x in plans],"source":"approved_artwork"}

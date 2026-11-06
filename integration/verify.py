@@ -18,7 +18,7 @@ def main(a):
         body={"op":"ask","actor":actor,"request":rid,"text":q,"intent":op,"service":srv,"professional":prof,"date":date}
         r=call(body)
         with (dir/(case+".json")).open("x") as f:json.dump(r,f,ensure_ascii=False)
-        if r.get("status")!="ok":raise RuntimeError("Reconcile "+case+" state="+str(r.get("state",r.get("code"))))
+        if r.get("status")!="ok":raise RuntimeError("Reconcile "+case+" state="+str(r.get("state",r.get("code")))+" reason="+str(r.get("reason")))
         if case in ("service","club"):
             if case=="service" and r.get("provider",{}).get("status")!="ok":raise RuntimeError("No confirmed service price")
             att=r["attachment"];assert att and not r["private"] and att["group"]==("servicos" if case=="service" else "clube-jp")
@@ -30,6 +30,13 @@ def main(a):
         again=call(body);assert (again.get("outgoing"),again.get("incoming"),again.get("attachment"))==(r["outgoing"],r["incoming"],r["attachment"])
         results[case]={k:r[k] for k in ("actor","conversation","incoming","outgoing","private","attachment","ai","provider")}
     conflict=call(dict(body,text="Outra mensagem fictícia"));assert conflict.get("code")=="id_conflict"
+    if a.ci:
+        def count():
+            query="SELECT count(*) FROM messages WHERE message_type=1"
+            return int(subprocess.check_output(["docker","compose","exec","-T","postgres","psql","-U","postgres","-d","chat","-Atc",query],cwd=ROOT,text=True).strip())
+        baseline=count();uncertain={"op":"ask","actor":"B","request":str(uuid.uuid4()),"text":"CI ambiguous delivery fixture"}
+        one=call(uncertain);two=call(uncertain)
+        assert one["status"]==two["status"]=="held" and one["state"]==two["state"]=="sending" and count()==baseline+1
     with (dir/"results.json").open("x") as f:json.dump(dict(wf=ready["workflow"],cases=results,duplicateSuppressed=True,conflictHeld=True),f,ensure_ascii=False)
     print("Four genuine pilot consumer paths passed, including native attachment hashes and replay.")
 if __name__=="__main__":

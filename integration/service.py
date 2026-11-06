@@ -107,7 +107,7 @@ class App:
                 pass
             return self.status(rid)
     def status(self,rid):
-        row=self.row(uid(rid));return json.loads(row["receipt"]) if row["state"]=="done" else {"status":"held","request":rid,"state":row["state"],"incoming":row["incoming"],"outgoing":row["outgoing"]}
+        row=self.row(uid(rid));return json.loads(row["receipt"]) if row["state"]=="done" else {"status":"held","request":rid,"state":row["state"],"incoming":row["incoming"],"outgoing":row["outgoing"],"reason":row["reason"]}
     def step(self,op,body):
         rid=uid(body.get("request"));row=self.row(rid);mid=body.get("incoming");need(type(mid) is int and row["incoming"]==mid,"wrong_incoming")
         key={"request":rid,"incoming":mid}
@@ -174,14 +174,17 @@ class App:
 class Web(http.server.BaseHTTPRequestHandler):
     def log_message(self,*args):pass
     def do_POST(self):
-        code=200
+        code=200;body={}
         try:
             need(hmac.compare_digest(self.headers.get("X-Pilot-Adapter",""),self.server.app.cfg["adapter_token"]),"denied")
             op=self.path.removeprefix("/");need(op in ("claim","plan","deliver"),"unknown_step")
             n=int(self.headers.get("Content-Length","0"));need(0<n<1000,"oversize")
-            result=self.server.app.step(op,json.loads(self.rfile.read(n)))
+            body=json.loads(self.rfile.read(n));result=self.server.app.step(op,body)
         except Exception as e:
             code=409 if isinstance(e,Stop) else 502;result={"status":"held"}
+            if isinstance(body,dict) and isinstance(body.get("request"),str):
+                reason=str(e) if isinstance(e,Stop) else "http_"+str(e.code) if isinstance(e,urllib.error.HTTPError) else type(e).__name__
+                with self.server.app.db() as c:c.execute("UPDATE events SET reason=? WHERE req=? AND state!='done'",(reason[:80],body["request"]))
         data=json.dumps(result,ensure_ascii=False).encode();self.send_response(code);self.send_header("Content-Type","application/json");self.send_header("Content-Length",str(len(data)));self.end_headers();self.wfile.write(data)
 class Screen(socketserver.StreamRequestHandler):
     def handle(self):
