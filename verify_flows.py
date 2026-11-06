@@ -20,6 +20,7 @@ def main():
         result=Local(15678).req("POST",path,body,header)
         if isinstance(result,list) and len(result)==1: result=result[0]
         if not isinstance(result,dict) or result.get("event_id")!=body["event_id"]:
+            dump("unexpected-hook.json",result)
             raise RuntimeError("Webhook did not return a reconciled event: "+body["event_id"])
         return result
     cases=[
@@ -35,12 +36,12 @@ def main():
         r=post(body)
         if r.get("status")!=state or r.get("route")!=route or not r.get("message_id") or bool(r.get("reply"))!=(state=="simulated"):
             raise RuntimeError(f"Unexpected {body['event_id']} state={r.get('status')} route={r.get('route')}")
-        proof[body["event_id"]]={"status":state,"route":route,"messageId":r["message_id"]}
+        proof[body["event_id"]]={"status":state,"route":route,"messageId":int(r["message_id"])}
     # Concurrent deliveries share one database primary key. The second may see a reserved row.
     with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:
         results=list(pool.map(post,[event("parallel"),event("parallel")]))
     assert sum(r.get("status")=="simulated" for r in results)==1 and any(r.get("status") in ("duplicate","held") for r in results)
-    proof["demo-parallel"]={"status":"simulated","route":"faq","messageId":next(r["message_id"] for r in results if r["status"]=="simulated")}
+    proof["demo-parallel"]={"status":"simulated","route":"faq","messageId":int(next(r["message_id"] for r in results if r["status"]=="simulated"))}
     # Restart only the dedicated clock and reconcile old events through a new authenticated HTTP request.
     dc("restart","clock");wait_http("clock")
     for body,status in [(event("faq"),"duplicate"),(event("uncertain",fault="uncertain"),"held"),(event("faq",actor="unknown"),"conflict")]:
