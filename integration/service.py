@@ -16,7 +16,7 @@ def normals(s):
 def sha(b):return hashlib.sha256(b).hexdigest()
 class NoRedirect(urllib.request.HTTPRedirectHandler):
     def redirect_request(self,*args):return None
-def http(port,path,data=None,headers=None,ctype="application/json",timeout=60,limit=2_000_000):
+def local_request(port,path,data=None,headers=None,ctype="application/json",timeout=60,limit=2_000_000):
     need(port in (13300,15678) and path.startswith("/") and not path.startswith("//"),"invalid_local_destination")
     body=data if isinstance(data,bytes) else (json.dumps(data).encode() if data is not None else None)
     req=urllib.request.Request("http://127.0.0.1:"+str(port)+path,data=body,headers={"Content-Type":ctype,**(headers or {})})
@@ -72,7 +72,7 @@ class App:
         conv=self.cfg["actors"][actor]["conversation"]
         return f"/api/v1/accounts/{self.cfg['account']}/conversations/{conv}/messages"
     def messages(self,actor):
-        return http(13300,self.chatpath(actor),headers={"api_access_token":self.cfg["agent_token"]})["payload"]
+        return local_request(13300,self.chatpath(actor),headers={"api_access_token":self.cfg["agent_token"]})["payload"]
     def options(self,msg):
         op=msg.get("intent","auto")
         need(op in ("auto","price","availability","services_art","club_art"),"invalid_intent")
@@ -97,11 +97,11 @@ class App:
             x=self.cfg["actors"][actor]
             path=f"/public/api/v1/inboxes/{self.cfg['channel']}/contacts/{x['source']}/conversations/{x['conversation']}/messages"
             try:
-                incoming=http(13300,path,{"content":q,"echo_id":rid})
+                incoming=local_request(13300,path,{"content":q,"echo_id":rid})
                 mid=incoming["id"];need(type(mid) is int and mid>0,"invalid_incoming")
                 self.advance(rid,"opening","incoming",incoming=mid)
                 # Only this UI triggers the local n8n webhook. The workflow rereads the actual inbox record.
-                http(15678,"/webhook/pilot-integrated-v1",{"request":rid,"incoming":mid},{"X-Pilot-Integrated":self.cfg["hook_token"]},timeout=110)
+                local_request(15678,"/webhook/pilot-integrated-v1",{"request":rid,"incoming":mid},{"X-Pilot-Integrated":self.cfg["hook_token"]},timeout=110)
             except Exception:
                 # Another worker may already have finished: only reconcile the same ID.
                 pass
@@ -131,7 +131,7 @@ class App:
             data,ct=multipart(fields,self.artbytes(art))
         else:
             data={**fields,"private":private};ct="application/json"
-        response=http(13300,self.chatpath(row["actor"]),data,{"api_access_token":self.cfg["agent_token"]},ct)
+        response=local_request(13300,self.chatpath(row["actor"]),data,{"api_access_token":self.cfg["agent_token"]},ct)
         oid=response["id"];need(type(oid) is int and oid>0,"invalid_outcome")
         self.advance(rid,"sending","checking",outgoing=oid)
         m=next((m for m in self.messages(row["actor"]) if m.get("id")==oid),None)
