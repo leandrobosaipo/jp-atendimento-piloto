@@ -94,6 +94,8 @@ services:
       N8N_PERSONALIZATION_ENABLED: "false"
       N8N_COMMUNITY_PACKAGES_ENABLED: "false"
       N8N_SECURE_COOKIE: "false" # HTTP restricted to this guest's loopback
+      GENERIC_TIMEZONE: America/Cuiaba
+      TZ: America/Cuiaba
       N8N_RUNNERS_MAX_CONCURRENCY: "1"
       EXECUTIONS_DATA_SAVE_ON_SUCCESS: none
       EXECUTIONS_DATA_SAVE_ON_ERROR: none

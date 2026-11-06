@@ -19,3 +19,7 @@ jobs:
           docker update --memory 1280m "$(docker compose ps -q flow)" >/dev/null
           python3 resize_flow.py --ci --source-commit "$GITHUB_SHA" --from-commit "$GITHUB_SHA" --apply
           test "$(docker compose exec -T postgres psql -U postgres -d flow -Atc "SELECT count(*) FROM flow WHERE name='PilotFixture0001'")" = 1
+      - name: Install and exercise the synthetic intake on local n8n, Langflow and Chatwoot
+        run: |
+          python3 configure_flows.py --ci --source-commit "$GITHUB_SHA" --from-commit "$GITHUB_SHA" --apply
+          python3 verify_flows.py
