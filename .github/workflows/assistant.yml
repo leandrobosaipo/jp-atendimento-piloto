@@ -27,3 +27,4 @@ jobs:
           test "$(stat -c '%U:%a' /run/atendimento-piloto-ai.sock)" = delladmin:600
           printf '{"op":"info"}' | sudo -u nobody /usr/local/libexec/atendimento-piloto-ai/client.py | jq -e '.code=="unavailable"'
           printf '{"op":"info"}' | sudo -u delladmin /usr/local/libexec/atendimento-piloto-ai/client.py | jq -e '.model=="gpt-6-luna" and .daily_requests==0'
+          sudo env GITHUB_ACTIONS=true python3 assistant_panel/update.py --ci --source-commit "$GITHUB_SHA" --from-commit "$GITHUB_SHA" --apply

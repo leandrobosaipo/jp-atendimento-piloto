@@ -26,7 +26,8 @@ $('form').addEventListener('submit',async e=>{
   try{const r=await call({op:'ask',id:crypto.randomUUID(),session,text:q});
     if(r.status!=='ok')throw Error(r.code);
     const refs=r.sources.map(s=>s.title).join(' · ');
-    bubble(r.decision==='handoff'?'Sugestão de encaminhamento':'Assistente virtual',r.reply,(refs?'Fontes: '+refs+' · ':'')+'Tokens: '+r.tokens.input+' entrada / '+r.tokens.output+' saída · Estimativa: '+dollars(r.estimate_micro_usd));$('#status').textContent='Resposta registrada no piloto.';
+    const usage=r.mode==='local'?'Saudação local · sem chamada à API':'Tokens: '+r.tokens.input+' entrada / '+r.tokens.output+' saída · Estimativa: '+dollars(r.estimate_micro_usd);
+    bubble(r.decision==='handoff'?'Sugestão de encaminhamento':'Assistente virtual',r.reply,(refs?'Fontes: '+refs+' · ':'')+usage);$('#status').textContent='Resposta registrada no piloto.';
   }catch(err){$('#status').textContent=errors[err.message]||'A tentativa não foi confirmada. Não houve reenvio automático.'}
   finally{busy=false;$('#reset').disabled=false;await info();$('#text').focus()}
 });

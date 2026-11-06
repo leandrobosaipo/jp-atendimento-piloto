@@ -48,5 +48,14 @@ class Tests(unittest.TestCase):
     def test_unsupported_sources_held(self):
         self.g.send=lambda *a:{"status":"completed","usage":{"input_tokens":1,"output_tokens":1},"output":[{"type":"message","content":[{"type":"output_text","text":'{"answer":"bad","decision":"answer","source_ids":["invented"]}'}]}]}
         with self.assertRaisesRegex(Refused,"held_uncertain"):self.g.handle(self.msg())
+    def test_private_identity_greeting_and_commercial_guard(self):
+        self.g.kb={"version":"v2","entries":[*KB["entries"],{"id":"voice","title":"Identidade","source":"internal","keywords":["identity"],"text":"Téo é o assistente virtual do laboratório."}]}
+        greeting=self.g.handle(self.msg("Oi"));self.assertIn("Téo",greeting["reply"]);self.assertEqual(greeting["mode"],"local")
+        self.assertEqual(self.g.handle({"op":"info"})["daily_requests"],0)
+        self.assertFalse(self.sent)
+        following=self.g.handle(self.msg("What are the hours?"));self.assertNotIn("Téo",following["reply"])
+        self.sid=uid()
+        club=self.g.handle(self.msg("Clube hours?"));self.assertIn("Téo",club["reply"])
+        self.assertEqual(club["decision"],"handoff");self.assertIn("confirmadas",club["reply"])
 
 if __name__=="__main__":unittest.main()
