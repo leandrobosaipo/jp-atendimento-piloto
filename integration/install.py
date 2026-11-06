@@ -75,7 +75,16 @@ def install(args):
     if read["active"] or read["connections"]!=wf["connections"]:raise RuntimeError("Graph mismatch")
     n8.req("POST","/rest/workflows/"+w["id"]+"/activate",{"versionId":read["versionId"]})
     read=n8.req("GET","/rest/workflows/"+w["id"])["data"];assert read["active"] and read["settings"]["saveDataErrorExecution"]=="none"
-    ui=json.loads(checked("runuser","-u","delladmin","--",str(BIN/"client.py"),stdin='{"op":"history","actor":"A"}'));assert ui["status"]=="ok"
+    for _ in range(15):
+        ui=json.loads(checked("runuser","-u","delladmin","--",str(BIN/"client.py"),stdin='{"op":"history","actor":"A"}'))
+        if ui["status"]=="ok":break
+        time.sleep(1)
+    else:
+        logs=checked("journalctl","-u",service.name,"-n","60","--no-pager","-o","cat")
+        types=re.findall(r"(?m)^(?:[a-zA-Z0-9_.]+\.)?([A-Za-z0-9]+(?:Error|Exception)):",logs)
+        flags=[x for x in ("Permission denied","Cannot assign requested address","Address already in use","Failed at step","unable to open database file","No such file or directory") if x in logs]
+        state=checked("systemctl","show",service.name,"--property","ActiveState,Result,ExecMainStatus","--value").splitlines()
+        raise RuntimeError(f"Local socket unavailable state={state} errors={types[-3:]} signals={flags}")
     result={"source":args.source_commit,"workflow":w["id"],"version":read["versionId"],"inbox":cfg["inbox"],"conversations":{k:x["conversation"] for k,x in cfg["actors"].items()},"approvedImages":len(files),"manifest":args.manifest_sha256}
     newfile(R/"ready.json",json.dumps(result).encode());print(json.dumps(result))
 if __name__=="__main__":

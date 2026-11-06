@@ -1,0 +1,28 @@
+name: Validate local bridge startup
+on:
+  push:
+    paths: ["integration/**", ".github/workflows/bridge.yml"]
+  workflow_dispatch:
+permissions: {contents: read}
+jobs:
+  bridge:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 3
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+      - name: Prove the real adapter and operator socket start with isolated credentials
+        run: |
+          sudo useradd --system --user-group --no-create-home delladmin
+          sudo install -d -m 755 /usr/local/libexec/atendimento-piloto-integracao /etc/atendimento-piloto-integracao
+          sudo install -m 755 integration/{service,provider,client,policy}.py /usr/local/libexec/atendimento-piloto-integracao/
+          printf '%s' '{"bridge":"127.0.0.1","adapter_token":"local-ci","actors":{"A":{"conversation":3}}}' | sudo tee /etc/atendimento-piloto-integracao/runtime.json >/dev/null
+          printf '%s' '{"assets":[]}' | sudo tee /etc/atendimento-piloto-integracao/assets.json >/dev/null
+          printf '%s' '{"services":{},"professionals":{}}' | sudo tee /etc/atendimento-piloto-integracao/appbarber-readonly.json >/dev/null
+          sudo install -m 644 integration/atendimento-piloto-integracao.service /etc/systemd/system/
+          sudo systemctl daemon-reload
+          sudo systemctl start atendimento-piloto-integracao.service
+          sleep 2
+          printf '{"op":"history","actor":"A"}' | sudo -u delladmin /usr/local/libexec/atendimento-piloto-integracao/client.py | tee /tmp/bridge-response.json
+          jq -e '.status=="ok" and .conversation==3' /tmp/bridge-response.json
+      - if: failure()
+        run: sudo journalctl -u atendimento-piloto-integracao.service --no-pager -n 40
