@@ -1,0 +1,16 @@
+name: Validate isolated pilot
+on: [push, workflow_dispatch]
+permissions: {contents: read}
+jobs:
+  pilot:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+      - name: Parse and boot the exact release
+        run: |
+          python3 -m py_compile prepare.py install.py verify.py
+          bash -n init-db.sh
+          python3 install.py --ci --source-commit "$GITHUB_SHA" --apply
+      - name: Verify fixture persistence and isolated restores
+        run: python3 verify.py

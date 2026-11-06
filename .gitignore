@@ -1,0 +1,7 @@
+private/
+.env*
+*.dump
+*.rdb
+*.tar*
+__pycache__/
+.DS_Store

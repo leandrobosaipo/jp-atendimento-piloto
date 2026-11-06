@@ -1,0 +1,114 @@
+name: atendimento-piloto
+x-base: &base
+  platform: linux/amd64
+  restart: unless-stopped
+  networks: [pilot]
+  logging: {driver: json-file, options: {max-size: 5m, max-file: "2"}}
+x-chat: &chat
+  <<: *base
+  image: chatwoot/chatwoot:v4.19.1-ce@sha256:72c2e89032264086de31fa258ac5190178eab4c87d226a5539474d14d96592f2
+  env_file: [./private/chat.env]
+  volumes: [chat-files:/app/storage]
+  environment:
+    RAILS_ENV: production
+    NODE_ENV: production
+    INSTALLATION_ENV: docker
+    FRONTEND_URL: http://127.0.0.1:13300
+    ENABLE_ACCOUNT_SIGNUP: "false"
+    DISABLE_TELEMETRY: "true"
+    RAILS_LOG_TO_STDOUT: "true"
+    RAILS_MAX_THREADS: "2"
+    WEB_CONCURRENCY: "0"
+    SIDEKIQ_CONCURRENCY: "2"
+    REDIS_URL: redis://redis:6379/0
+    POSTGRES_HOST: postgres
+    POSTGRES_DATABASE: chat
+    POSTGRES_USERNAME: chat
+    ACTIVE_STORAGE_SERVICE: local
+    MAILER_SENDER_EMAIL: fixture@example.invalid
+  depends_on:
+    postgres: {condition: service_healthy}
+    redis: {condition: service_healthy}
+services:
+  postgres:
+    <<: *base
+    image: pgvector/pgvector:pg16@sha256:c0cd736fe8b8b5d408db56b780570bac404fe518e66e39de624aa46f9aabc60a
+    mem_limit: 512m
+    env_file: [./private/postgres.env]
+    volumes:
+      - db:/var/lib/postgresql/data
+      - ./init-db.sh:/docker-entrypoint-initdb.d/10-roles.sh:ro
+    healthcheck:
+      test: [CMD, pg_isready, -U, postgres]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+  redis:
+    <<: *base
+    image: redis:7.4-alpine@sha256:ec1c2d3603c3d7d65b153bedda0248b641aa3bd7684503406b27b9e870ac0796
+    mem_limit: 128m
+    env_file: [./private/redis.env]
+    command: [sh, -ec, 'exec redis-server --appendonly yes --maxmemory 80mb --maxmemory-policy noeviction --requirepass "$$REDISCLI_AUTH"']
+    volumes: [redis-data:/data]
+    healthcheck:
+      test: [CMD, redis-cli, ping]
+      interval: 10s
+      timeout: 4s
+      retries: 12
+  chat:
+    <<: *chat
+    mem_limit: 1024m
+    entrypoint: docker/entrypoints/rails.sh
+    command: [bundle, exec, rails, s, -p, "3000", -b, 0.0.0.0]
+    ports: ["127.0.0.1:13300:3000"]
+  worker:
+    <<: *chat
+    mem_limit: 768m
+    command: [bundle, exec, sidekiq, -C, config/sidekiq.yml]
+  flow:
+    <<: *base
+    image: langflowai/langflow:1.13.1@sha256:643d78228cd148be70e52a860dd3456c834a070c98c81b354f713908d40949f8
+    mem_limit: 1280m
+    env_file: [./private/flow.env]
+    environment:
+      LANGFLOW_AUTO_LOGIN: "false"
+      LANGFLOW_SUPERUSER: fixture
+      LANGFLOW_WORKERS: "1"
+      DO_NOT_TRACK: "true"
+      LANGFLOW_CONFIG_DIR: /app/langflow
+    volumes: [flow-files:/app/langflow]
+    ports: ["127.0.0.1:17860:7860"]
+    depends_on:
+      postgres: {condition: service_healthy}
+  clock:
+    <<: *base
+    image: n8nio/n8n:2.46.6@sha256:256a0fca38c4f0ab02524bcebf77b8ed5acc7aa99a28c4cbca7a4034a76d4b97
+    mem_limit: 512m
+    env_file: [./private/clock.env]
+    environment:
+      DB_TYPE: postgresdb
+      DB_POSTGRESDB_HOST: postgres
+      DB_POSTGRESDB_DATABASE: clock
+      DB_POSTGRESDB_USER: clock
+      N8N_DIAGNOSTICS_ENABLED: "false"
+      N8N_VERSION_NOTIFICATIONS_ENABLED: "false"
+      N8N_TEMPLATES_ENABLED: "false"
+      N8N_PERSONALIZATION_ENABLED: "false"
+      N8N_COMMUNITY_PACKAGES_ENABLED: "false"
+      N8N_RUNNERS_MAX_CONCURRENCY: "1"
+      EXECUTIONS_DATA_SAVE_ON_SUCCESS: none
+      EXECUTIONS_DATA_SAVE_ON_ERROR: none
+      EXECUTIONS_DATA_SAVE_MANUAL_EXECUTIONS: "false"
+      N8N_ENFORCE_SETTINGS_FILE_PERMISSIONS: "true"
+    volumes: [clock-files:/home/node/.n8n]
+    ports: ["127.0.0.1:15678:5678"]
+    depends_on:
+      postgres: {condition: service_healthy}
+networks:
+  pilot: {internal: true}
+volumes:
+  db: {}
+  redis-data: {}
+  chat-files: {}
+  flow-files: {}
+  clock-files: {}
