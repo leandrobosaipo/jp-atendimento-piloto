@@ -13,6 +13,7 @@ jobs:
       - name: Validate budget, replay, context and rendering source
         run: |
           python3 assistant_panel/test_gateway.py
+          python3 assistant_panel/test_update.py
           node --check assistant_panel/cockpit/panel.js
           python3 -m json.tool assistant_panel/cockpit/manifest.json >/dev/null
       - name: Exercise real systemd credentials and Unix socket with private fixtures
