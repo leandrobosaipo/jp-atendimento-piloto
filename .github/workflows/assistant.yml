@@ -21,7 +21,7 @@ jobs:
           sudo install -d -m 700 private/openai-inbox
           printf '%s' '{"version":"fixture","entries":[{"id":"sample","title":"Sample","source":"local","keywords":["sample"],"text":"Sample synthetic fact."}]}' | sudo tee private/openai-inbox/kb.json >/dev/null
           printf 'sk-offline%s' "$GITHUB_SHA" | sudo tee private/openai-inbox/openai.key >/dev/null
-          sudo chmod 600 private/openai-inbox/*
+          sudo chmod 600 private/openai-inbox/kb.json private/openai-inbox/openai.key
           hash=$(sudo sha256sum private/openai-inbox/kb.json | cut -d' ' -f1)
           sudo env GITHUB_ACTIONS=true python3 assistant_panel/install.py --ci --source-commit "$GITHUB_SHA" --kb-sha256 "$hash" --apply
           test "$(stat -c '%U:%a' /run/atendimento-piloto-ai.sock)" = delladmin:600
