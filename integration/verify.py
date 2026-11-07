@@ -20,6 +20,10 @@ def main(a):
         with (dir/(case+".json")).open("x") as f:json.dump(r,f,ensure_ascii=False)
         if r.get("status")!="ok":raise RuntimeError("Reconcile "+case+" state="+str(r.get("state",r.get("code")))+" reason="+str(r.get("reason")))
         if case in ("service","club"):
+            ids=[part["outgoing"] for part in r["parts"]]
+            assert ids==sorted(set(ids)) and len(ids)>=2 and all(part["state"]=="confirmed" for part in r["parts"])
+            assert not any(part["attachment"] for part in r["parts"][:-1]) and r["parts"][-1]["attachment"]==r["attachment"]
+            assert r["ai"]["mode"]=="local" and r["ai"]["estimate_micro_usd"]==0
             if case=="service" and r.get("provider",{}).get("status")!="ok":raise RuntimeError("No confirmed service price")
             att=r["attachment"];assert att and not r["private"] and att["group"]==("servicos" if case=="service" else "clube-jp")
             import base64
@@ -28,15 +32,26 @@ def main(a):
             assert r["provider"].get("status")=="ok" and r["provider"].get("reservation_performed") is False
         if case=="general":assert r["ai"]["mode"]=="api"
         again=call(body);assert (again.get("outgoing"),again.get("incoming"),again.get("attachment"))==(r["outgoing"],r["incoming"],r["attachment"])
+        assert again["parts"]==r["parts"]
         results[case]={k:r[k] for k in ("actor","conversation","incoming","outgoing","private","attachment","ai","provider")}
     conflict=call(dict(body,text="Outra mensagem fictícia"));assert conflict.get("code")=="id_conflict"
     if a.ci:
         def count():
             query="SELECT count(*) FROM messages WHERE message_type=1"
             return int(subprocess.check_output(["docker","compose","exec","-T","postgres","psql","-U","postgres","-d","chat","-Atc",query],cwd=ROOT,text=True).strip())
-        baseline=count();uncertain={"op":"ask","actor":"B","request":str(uuid.uuid4()),"text":"CI ambiguous delivery fixture"}
+        assert all(x["state"]=="confirmed" for x in r["parts"])
+        baseline=count();uncertain={"op":"ask","actor":"B","request":str(uuid.uuid4()),"text":"CI ambiguous delivery fixture","intent":"club_art"}
         one=call(uncertain);two=call(uncertain)
-        assert one["status"]==two["status"]=="held" and one["state"]==two["state"]=="sending" and count()==baseline+1
+        assert one==two and one["status"]=="held" and one["state"]=="sending" and count()==baseline+2
+        assert [p["state"] for p in one["parts"]][:3]==["confirmed","sending","pending"]
+        subprocess.run(["systemctl","restart","atendimento-piloto-integracao.service"],check=True)
+        import time
+        for _ in range(30):
+            if call({"op":"status","request":uncertain["request"]}).get("state")=="sending":break
+            time.sleep(.2)
+        assert call(uncertain)==two and count()==baseline+2
+        next_event=call(dict(uncertain,request=str(uuid.uuid4()),text="CI next message"))
+        assert next_event["state"]=="waiting" and next_event["incoming"] and count()==baseline+2
     with (dir/"results.json").open("x") as f:json.dump(dict(wf=ready["workflow"],cases=results,duplicateSuppressed=True,conflictHeld=True),f,ensure_ascii=False)
     print("Four genuine pilot consumer paths passed, including native attachment hashes and replay.")
 if __name__=="__main__":

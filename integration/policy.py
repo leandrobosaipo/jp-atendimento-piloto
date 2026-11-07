@@ -37,7 +37,6 @@ def classify(question,options,cfg):
         today=dt.datetime.now(ZoneInfo("America/Cuiaba")).date()
         given=re.search(r"\b\d{4}-\d{2}-\d{2}\b",q)
         date=given.group() if given else str(today+dt.timedelta(days=1)) if "amanha" in q else str(today) if "hoje" in q else ""
-    if intent=="price" and ((service=="coloring" and re.search(r"barba|protese",q)) or (service=="hydration" and "intens" in q) or (service=="eyebrows" and "navalha" in q)):intent="clarify"
     return intent,service,prof,date
 
 def group_for(intent):
@@ -54,15 +53,16 @@ def prepare(question,options,cfg,catalog,query):
     intent,service,prof,date=classify(question,options,cfg)
     context={"category":intent};group=group_for(intent)
     if intent=="sensitive":return context,"Revisão humana necessária. Esta solicitação permanece na fila privada do teste.","handoff",None
-    if intent=="clarify":return context,"O cadastro genérico não identifica esse serviço específico com segurança. A equipe precisa confirmar qual item corresponde ao pedido.","handoff",None
     if intent=="chat":return context,None,None,None
     if intent=="club_art":
         plans=catalog["club_plans"];context={"category":"club","plans":[{"name":x["name"],"visits_per_month":x["visits_per_month"],"price_cents":x["price_cents"]} for x in plans],"source":"approved_artwork"}
-        text="Na tabela aprovada para este teste: "+"; ".join(x["name"]+" — "+currency(x["price_cents"])+" ("+str(x["visits_per_month"])+" visitas/mês)" for x in plans)+". As condições precisam ser confirmadas com a equipe."
+        text="\n".join(x["name"]+" — "+currency(x["price_cents"])+" ("+str(x["visits_per_month"])+" visitas/mês)." for x in plans)
         return context,text,"answer",group
     if intent=="services_art":
         context["source"]="approved_artwork";context["price_source_policy"]=catalog["price_source_policy"]
-        return context,"Segue a tabela de serviços aprovada para esta conversa fictícia. Alguns valores da arte diferem do AppBarber. Para um orçamento, consulte o serviço específico.","answer",group
+        return context,"Aqui está a tabela de serviços.","answer",group
+    if intent=="price" and precedence(catalog)=="artwork":
+        return artwork_quote(question,service,catalog)
     if not service or service not in cfg.get("services",{}):return context,"Para consultar o cadastro correto, escolha um serviço do piloto.","handoff",None
     op="prices" if intent=="price" else "availability"
     if op=="availability" and (not date or not prof):return context,"Para consultar a disponibilidade, escolha um profissional e um dia. Nenhum horário foi reservado.","handoff",None
@@ -73,9 +73,36 @@ def prepare(question,options,cfg,catalog,query):
         return context,"A consulta oficial precisa de confirmação pela equipe. Nenhum valor ou horário foi confirmado.","handoff",None
     if op=="availability":
         slots=facts["slots"];selected=cfg["professionals"][prof]["name"]
-        text=(f"Na consulta de {date} com {selected}, o AppBarber retornou "+", ".join(slots)+" (horário de Cuiabá)." if slots else f"A consulta para {date} com {selected} não retornou horários disponíveis.")
-        return context,text+" É uma consulta de disponibilidade; nenhum horário foi reservado.","answer",None
+        text=(f"Em {date}, os horários disponíveis com {selected} são "+", ".join(slots)+" (horário de Cuiabá)." if slots else f"Não encontrei horários disponíveis com {selected} em {date}.")
+        return context,text+" Nenhum horário foi reservado.","answer",None
     return service_price(context,service,catalog,group)
+
+def artwork_quote(question,service,catalog):
+    """Match the approved printed description independently of scheduling IDs."""
+    words=set(re.findall(r"[a-z]+",norm(question)))
+    ignored={"a","de","da","na","do","em","somente","partir"}
+    rows=catalog["service_art_prices"]
+    matches=[r for r in rows if set(norm(r["name"]).replace("("," ").replace(")"," ").split())-ignored <= words]
+    if len(matches)>1:
+        return {"category":"clarify"},"Qual desses serviços você quer consultar primeiro?","answer",None
+    row=matches[0] if matches else None
+    # Only unambiguous shorthand may select a printed description. Neither
+    # amount equality nor a generic AppBarber ID establishes equivalence.
+    aliases={"maintenance":"manutencao","adjustment":"reajuste","taping":"fitagem","haircut":"corte","styling":"penteado","simple_beard":"barba simples"}
+    if row is None and service in aliases and service in catalog.get("service_price_by_key",{}):
+        found=[r for r in rows if norm(r["name"]).startswith(aliases[service])]
+        if len(found)==1 and found[0]["price_cents"]==catalog["service_price_by_key"][service]:row=found[0]
+    if row is None:
+        if "coloracao" in words or service=="coloring":prompt="Você quer saber o valor da coloração da barba ou da prótese?"
+        elif "barba" in words or service=="beard":prompt="Você prefere saber o valor da barba simples ou da completa?"
+        elif "hidratacao" in words or service=="hydration":prompt="Você quer saber o valor da hidratação intensa?"
+        elif "sobrancelha" in words or service=="eyebrows":prompt="Você quer saber o valor da sobrancelha na navalha?"
+        else:return {"category":"price","source":"approved_artwork"},"O valor desse serviço precisa de confirmação pela equipe.","handoff",None
+        return {"category":"clarify"},prompt,"answer",None
+    name=row["name"];amount=row["price_cents"];starting="a partir de" in norm(name)
+    label=re.sub(r"\s*\(a partir de\)\s*$","",name,flags=re.I)
+    fact={"category":"price","status":"ok","source":"approved_artwork","name":label,"price_cents":amount,"currency":"BRL","starting_at":starting}
+    return fact,f"{label}: {'a partir de ' if starting else ''}*{currency(amount)}*.","answer","servicos"
 
 def service_price(context,service,catalog,group):
     cents=context["price_cents"];base=context["name"]

@@ -10,6 +10,12 @@ jobs:
     timeout-minutes: 3
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+      - name: Check native message planning and interrupted delivery
+        run: |
+          python3 integration/test_parts.py
+          python3 integration/test_policy.py
+          python3 -m py_compile integration/update.py
+          node --check integration/cockpit/app.js
       - name: Prove the real adapter and operator socket start with isolated credentials
         run: |
           sudo useradd --system --user-group --no-create-home delladmin
