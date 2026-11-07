@@ -95,6 +95,17 @@ Este registro não altera configurações de retenção, não ativa limpeza auto
 e não apaga dados. Antes de implementar, definir e validar o marco de contagem,
 o alcance sobre conversas, anexos e cópias, e eventuais exceções aplicáveis.
 
+## Continuidade da conexão AppBarber
+
+Se a conexão AppBarber expirar, a reativação fica sob responsabilidade do
+proprietário do projeto (opção A), identificado na documentação privada.
+O assistente não deve tratar essa definição de responsável como reativação
+concluída nem como autorização para alterar sessões ou credenciais.
+
+Nenhuma sessão foi renovada, substituída ou reaberta por esta atualização.
+A falha de acesso continua exigindo retenção segura da operação, sem afirmar
+disponibilidade ou sucesso de agenda sem confirmação do sistema.
+
 ## Estado técnico e alcance das provas existentes
 
 A referência consultada é a revisão
