@@ -1,5 +1,7 @@
 # Conversas fictícias no Cockpit
 
+**Decisões de 07/11/2026:** o usuário escolheu o preço da imagem aprovada em caso de divergência e o objetivo de agenda com consulta, criação, alteração e cancelamento automáticos. O comportamento abaixo descreve a implementação atual, ainda somente leitura e com retenção de divergências; a publicação da decisão não altera esse comportamento. Mensagens em vários envios e validação no WhatsApp também continuam pendentes. Veja o [registro de decisões e homologação](../docs/2026-11-07-decisoes-e-homologacao.md).
+
 Abra **Conversas fictícias**, escolha um dos três clientes de teste e escreva uma mensagem. O histórico mostra os IDs da conversa, da entrada e da saída, a fonte consultada e a tabela anexada. A tela **Teste de atendimento** continua disponível para testar o modelo diretamente.
 
 O painel cria a mensagem recebida pela API de cliente da caixa local e envia seu ID para um webhook autenticado do n8n do piloto. O workflow confere o registro de origem no Chatwoot, prepara a resposta e pede ao adaptador que faça uma única entrega. As três etapas têm destinos fixos. Mensagens criadas fora desse caminho não são despachadas por um webhook global do Chatwoot.

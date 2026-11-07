@@ -1,5 +1,7 @@
 # Piloto de atendimento
 
+[Decisões do usuário e critérios de homologação de 07/11/2026](docs/2026-11-07-decisoes-e-homologacao.md): aprovação limitada às respostas testadas, Evolution no Mac Mini, preço da imagem aprovada, mensagens múltiplas, agenda e adesão ao Clube automáticas, encaminhamento humano e variantes de imagens. Os requisitos novos ainda não estão homologados no WhatsApp; este registro não libera produção.
+
 Laboratório fictício de atendimento em Linux amd64. O Compose usa Chatwoot CE para a caixa de entrada, Langflow para fluxos e uma instância própria do n8n. Cada aplicação tem seu papel e seu banco em PostgreSQL. Redis atende os processos do Chatwoot. A rede do projeto é interna e as três interfaces são publicadas no loopback do Linux. Os limites somam 4,375 GiB, incluindo 1,5 GiB para Langflow. A primeira medição no piloto encontrou pressão de memória sob o limite anterior de 1,25 GiB.
 
 O bootstrap usa Compose, systemd e a biblioteca padrão do Python instalados no destino. A preferência por Rust foi avaliada para este projeto. Manter os três produtos prontos e usar as ferramentas nativas para configurar e testar a pilha reduz dependências de compilação no servidor.
