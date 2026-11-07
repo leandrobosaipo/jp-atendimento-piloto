@@ -7,6 +7,7 @@ import shutil
 import socket
 import subprocess
 import time
+import urllib.error
 import urllib.request
 from pathlib import Path
 from prepare import main as prepare
@@ -35,18 +36,34 @@ def run(*args, timeout=900, quiet=False):
 def dc(*args, **kwargs):
     return run("docker", "compose", *args, **kwargs)
 
+def refresh_forwarders(services):
+    """Re-resolve endpoints after a planned restart, leaving sockets listening."""
+    units = [f"atendimento-piloto@{PORTS[service][0]}.service" for service in services]
+    if units:
+        privileged = [] if os.geteuid() == 0 else ["sudo", "-n"]
+        run(*privileged, "systemctl", "stop", *units)
+
 def wait_http(service, timeout=480):
     port, path = PORTS[service]
     end = time.monotonic() + timeout
+    last_error = "no response"
+    attempts = 0
     while time.monotonic() < end:
+        attempts += 1
         try:
             with urllib.request.urlopen(f"http://127.0.0.1:{port}{path}",timeout=3) as r:
                 if r.status == 200:
                     return
-        except OSError:
-            pass
+                last_error = f"HTTP {r.status}"
+        except OSError as error:
+            # Do not include response bodies, URLs with credentials or raw errors.
+            if isinstance(error, urllib.error.HTTPError):
+                last_error = f"HTTP {error.code}"
+            else:
+                cause = getattr(error, "reason", error)
+                last_error = type(cause).__name__
         time.sleep(3)
-    raise RuntimeError(service + " readiness timeout")
+    raise RuntimeError(f"{service} readiness timeout after {attempts} probes; last result: {last_error}")
 
 def main():
     parser=argparse.ArgumentParser()

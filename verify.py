@@ -9,7 +9,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from pathlib import Path
-from install import ROOT, SECRET, PORTS, dc, run, wait_http
+from install import ROOT, SECRET, PORTS, dc, run, wait_http, refresh_forwarders
 
 MARKER = "PilotFixture0001"
 
@@ -31,6 +31,12 @@ def request(client, port, path, body=None, form=False, token=None):
 
 def sql(db,query):
     return dc("exec","-T","postgres","psql","-v","ON_ERROR_STOP=1","-U","postgres","-d",db,"-Atc",query)
+
+def restart_and_wait():
+    dc("restart", "chat", "worker", "clock", "flow")
+    refresh_forwarders(PORTS)
+    for service in PORTS:
+        wait_http(service)
 
 def main():
     os.umask(0o077)
@@ -62,6 +68,7 @@ def main():
             raise RuntimeError("Chatwoot fixture bootstrap failed")
     finally:
         dc("up","-d","--no-deps","chat","worker")
+        refresh_forwarders(("chat",))
     wait_http("chat")
     flowpw=next(line.split("=",1)[1] for line in (SECRET/"flow.env").read_text().splitlines() if line.startswith("LANGFLOW_SUPERUSER_PASSWORD="))
     token=request(client,17860,"/api/v1/login",{"username":"fixture","password":flowpw},form=True)["access_token"]
@@ -75,9 +82,7 @@ def main():
     result=request(client,15678,"/rest/workflows",workflow)["data"]
     assert result["name"]==MARKER and result["active"] is False
     checks={"chat":("contacts","identifier"),"flow":("flow","name"),"clock":("workflow_entity","name")}
-    dc("restart","chat","worker","clock","flow")
-    for service in PORTS:
-        wait_http(service)
+    restart_and_wait()
     if int(dc("exec","-T","redis","redis-cli","SCARD","processes"))<1:
         raise RuntimeError("Sidekiq heartbeat missing")
     records={}

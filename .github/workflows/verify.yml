@@ -10,6 +10,8 @@ jobs:
     timeout-minutes: 35
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+      - name: Test readiness and restart helpers without services
+        run: python3 -m unittest discover -s tests -v
       - name: Parse and boot the exact release
         run: |
           python3 -m py_compile prepare.py install.py verify.py
@@ -41,3 +43,6 @@ jobs:
           assets=$(sudo sha256sum private/integration-inbox/assets.json | cut -d' ' -f1)
           sudo env GITHUB_ACTIONS=true python3 integration/install.py --ci --source-commit "$GITHUB_SHA" --manifest-sha256 "$assets" --apply
           sudo env GITHUB_ACTIONS=true python3 integration/verify.py --ci
+      - name: Report allowlisted readiness diagnostics
+        if: failure()
+        run: python3 diagnose_readiness.py
