@@ -54,14 +54,16 @@ def update(a):
     old=private(ETC/"assets.json",80000)
     demand(old==private(INBOX/"assets.json",80000) and digest(old)==a.old_manifest==prior["manifest"],"Manifest drift")
     catalog=json.loads(old)
-    demand(catalog["price_source_policy"]=="pending_user_resolution" and catalog["service_art_prices"],"Unexpected previous policy")
+    policy=catalog["price_source_policy"]
+    demand(policy in ("pending_user_resolution","artwork") and catalog["service_art_prices"],"Unexpected previous policy")
     assets=catalog["assets"]
     demand(len({x["id"] for x in assets})==6 and sorted(x["group"] for x in assets)==["clube-jp"]*3+["servicos"]*3,"Expected six images")
     for item in assets:
         name=item["filename"];demand(pathlib.Path(name).name==name and item["approved"] is True,"Unexpected image")
         for path in (ETC/"assets"/name,INBOX/"assets"/name):
             demand(not path.is_symlink() and path.stat().st_size==item["bytes"] and digest(path.read_bytes())==item["sha256"],"Image drift")
-    catalog["price_source_policy"]="artwork";new=(json.dumps(catalog,ensure_ascii=False,indent=2)+"\n").encode()
+    catalog["price_source_policy"]="artwork"
+    new=old if policy=="artwork" else (json.dumps(catalog,ensure_ascii=False,indent=2)+"\n").encode()
     demand(digest(new)==a.new_manifest,"Target manifest mismatch")
     mapping={"integration/"+n:BIN/n for n in ("client.py","policy.py","provider.py","service.py")}
     mapping.update({"integration/cockpit/"+n:WEB/n for n in ("index.html","manifest.json","style.css","app.js")})
@@ -72,7 +74,8 @@ def update(a):
         demand(not path.is_symlink() and path.read_bytes()==before,"Installed code drift: "+name)
         after=(ROOT/name).read_bytes()
         if after!=before:changes[path]=(before,after,path.stat().st_mode&0o777)
-    for path in (INBOX/"assets.json",ETC/"assets.json"):changes[path]=(old,new,0o600)
+    if old!=new:
+        for path in (INBOX/"assets.json",ETC/"assets.json"):changes[path]=(old,new,0o600)
     pre=audit();info=client(AI_BIN/"client.py",{"op":"info"})
     demand(info.get("status")=="ok" and client(BIN/"client.py",{"op":"history","actor":"A"}).get("status")=="ok","Consumer preflight failed")
     if not a.apply:return {**pre,"plan":"update integration and gateway","files":len(changes)}
@@ -91,7 +94,8 @@ def update(a):
             try:
                 demand(audit()==pre,"Activity before cutover")
                 for path,(_,after,mode) in changes.items():put(path,after,mode)
-                checked("systemctl","restart",AI);checked("systemctl","start",UNIT)
+                if AI_BIN/"gateway.py" in changes:checked("systemctl","restart",AI)
+                checked("systemctl","start",UNIT)
                 for _ in range(30):
                     if client(BIN/"client.py",{"op":"history","actor":"A"}).get("status")=="ok":break
                     time.sleep(.2)
@@ -101,7 +105,8 @@ def update(a):
             except BaseException:
                 checked("systemctl","stop",UNIT)
                 for path,(before,_,mode) in changes.items():put(path,before,mode)
-                checked("systemctl","restart",AI);checked("systemctl","start",UNIT)
+                if AI_BIN/"gateway.py" in changes:checked("systemctl","restart",AI)
+                checked("systemctl","start",UNIT)
                 raise
             result={**ready,**pre,"source":a.source_commit,"previous":a.from_commit,"manifest":digest(new),"previous_manifest":digest(old),"backup_dir":str(target)}
             newfile(target/"ready.json",json.dumps(result).encode())

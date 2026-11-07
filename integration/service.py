@@ -255,12 +255,14 @@ def message_parts(reply,asset,private):
     need(reply.count("*")%2==0,"unbalanced_emphasis")
     chunks=[];current="";end=0
     for match in re.finditer(r"\*[^*]+\*|https?://\S+|R\$\s*[\d.,]+|\S+",reply):
-        token=match.group();gap="\n" if "\n" in reply[end:match.start()] else " "
+        token=match.group();original_gap=reply[end:match.start()]
+        gap="\n" if "\n" in original_gap else " " if original_gap else ""
         end=match.end()
         need(len(token)<=250,"part_too_long")
-        if current and (gap=="\n" or len(current)+1+len(token)>250 or (len(current)>=80 and current.endswith((".","!","?",";")))):
+        if current and gap and (gap=="\n" or len(current)+len(gap)+len(token)>250 or (len(current)>=80 and current.endswith((".","!","?",";")))):
             need(current.count("*")%2==0,"cannot_split_emphasis");chunks.append((current,None));current=""
         current=current+gap+token if current else token
+        need(len(current)<=250,"part_too_long")
     if current:chunks.append((current,None))
     need(0<len(chunks)<=10-bool(asset),"part_count")
     if asset:chunks.append(("Tabela de serviços" if asset.startswith("servicos-") else "Planos do Clube",asset))

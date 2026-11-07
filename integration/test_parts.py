@@ -16,6 +16,7 @@ class Parts(unittest.TestCase):
         self.assertEqual(parts[-1][1],"servicos-02")
         self.assertTrue(any("*R$ 35,00*" in t for t,a in parts))
         self.assertEqual(message_parts("Tudo certo.",None,False),[("Tudo certo.",None)])
+        self.assertEqual(message_parts("Valor: *R$ 30,00*.",None,False),[("Valor: *R$ 30,00*.",None)])
         for value in ("*"+"a"*300+"*","abc "*900):
             with self.assertRaises(Stop):message_parts(value,None,False)
     def test_catalog_without_provider(self):
