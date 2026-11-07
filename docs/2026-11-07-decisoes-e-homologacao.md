@@ -106,6 +106,21 @@ Nenhuma sessão foi renovada, substituída ou reaberta por esta atualização.
 A falha de acesso continua exigindo retenção segura da operação, sem afirmar
 disponibilidade ou sucesso de agenda sem confirmação do sistema.
 
+## Orçamento inicial
+
+Foi aprovado começar com **teto de US$ 10 por mês**, com **alertas em US$ 5
+e US$ 8**. A decisão está confirmada; a configuração do teto e dos dois alertas
+e seus testes continuam pendentes.
+
+Foi proposta uma revisão após as primeiras 100 conversas. Essa revisão permanece
+uma proposta, separada da aprovação do teto e dos alertas, e não altera os valores
+automaticamente.
+
+Esta publicação não altera limites reais, cotas do piloto, registros de consumo
+ou configurações de cobrança. Antes da ativação, validar a contabilização,
+o período mensal, os destinatários dos alertas e o comportamento ao atingir
+cada limite, preservando os registros existentes.
+
 ## Estado técnico e alcance das provas existentes
 
 A referência consultada é a revisão
@@ -154,6 +169,8 @@ ativar agora nem substitui a definição da release e da janela de ativação.
       retomada e tratamento de resultados incertos.
 - [ ] Definir, implementar e testar a retenção desejada de 1 ano, sujeita a revisão,
       sem tratar este registro como autorização para apagar dados.
+- [ ] Configurar e testar o teto de US$ 10/mês e os alertas em US$ 5 e US$ 8,
+      preservando os registros de consumo e distinguindo a revisão proposta.
 - [ ] Publicar e aprovar os checks do SHA exato da futura implementação.
 - [ ] Definir release, janela de ativação e retorno, com autorização específica.
 
