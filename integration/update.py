@@ -1,6 +1,7 @@
 """In-place migration with a quiet admission window. Roll back code only."""
-import argparse, contextlib, fcntl, hashlib, json, os, pathlib, re, sqlite3, subprocess, tempfile, time
-from install import ROOT, BIN, WEB, ETC, INBOX, R, git, checked, newfile, private
+import argparse, contextlib, fcntl, hashlib, json, os, pathlib, re, sqlite3, subprocess, sys, tempfile, time
+sys.path.insert(0,str(pathlib.Path(__file__).resolve().parents[1]))
+from integration.install import ROOT, BIN, WEB, ETC, INBOX, R, git, checked, newfile, private
 
 UNIT="atendimento-piloto-integracao.service"
 AI="atendimento-piloto-ai.service"
