@@ -3,6 +3,8 @@
 import base64, datetime as dt, hashlib, hmac, http.server, io, json, os, pathlib, re, secrets, socket, socketserver, sqlite3, threading, unicodedata, urllib.error, urllib.parse, urllib.request, uuid
 from zoneinfo import ZoneInfo
 import provider
+import fcntl
+from contextlib import contextmanager
 
 HERE=pathlib.Path(__file__).resolve().parent
 ZONE=ZoneInfo("America/Cuiaba")
@@ -57,6 +59,14 @@ class App:
         with self.db() as conn:
             conn.execute("PRAGMA journal_mode=WAL")
             conn.execute("""CREATE TABLE IF NOT EXISTS events(req TEXT PRIMARY KEY,actor TEXT NOT NULL,question TEXT NOT NULL,options TEXT NOT NULL,state TEXT NOT NULL,incoming INTEGER UNIQUE,outgoing INTEGER,reserved_asset TEXT,asset TEXT,plan TEXT,receipt TEXT,reason TEXT,stamp TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)""")
+            conn.execute("""CREATE TABLE IF NOT EXISTS parts(req TEXT NOT NULL,pos INTEGER NOT NULL,content TEXT NOT NULL,asset TEXT,private INTEGER NOT NULL,state TEXT NOT NULL DEFAULT 'pending',outgoing INTEGER UNIQUE,attachment TEXT,PRIMARY KEY(req,pos))""")
+        self.send_locks={actor:threading.Lock() for actor in settings["actors"]}
+    @contextmanager
+    def admission(self):
+        with open(self.dbfile,"rb") as guard:
+            try:fcntl.flock(guard,fcntl.LOCK_SH|fcntl.LOCK_NB)
+            except BlockingIOError:raise Stop("maintenance")
+            yield
     def db(self):
         c=sqlite3.connect(self.dbfile,timeout=6);c.row_factory=sqlite3.Row;return c
     def row(self,rid):
@@ -85,9 +95,13 @@ class App:
         sanitized=re.sub(r"\b20\d\d-(?:0[1-9]|1[0-2])-(?:0[1-9]|[12]\d|3[01])\b"," ",q)
         need(not re.search(r"@|\b\d[\d .()-]{7,}\d\b",sanitized),"use_fictional_text")
         opts=self.options(msg);q=q.strip();o=json.dumps(opts,sort_keys=True)
-        with self.actor_locks[actor]:
+        with self.admission(),self.actor_locks[actor]:
             from policy import classify,group_for
-            g=group_for(classify(q,opts,self.prov)[0])
+            with self.db() as c:
+                prior=c.execute("SELECT plan,state FROM events WHERE actor=? ORDER BY rowid DESC LIMIT 1",(actor,)).fetchone()
+            previous=json.loads(prior["plan"]) if prior and prior["plan"] and prior["state"]=="done" else {}
+            lookup=self.followup(q,opts,previous)
+            g=group_for(classify(lookup,opts,self.prov)[0])
             choice=secrets.choice([a["id"] for a in self.catalog["assets"] if a["group"]==g]) if g else None
             with self.db() as c:
                 fresh=c.execute("INSERT OR IGNORE INTO events(req,actor,question,options,state,reserved_asset) VALUES(?,?,?,?,'opening',?)",(rid,actor,q,o,choice)).rowcount
@@ -100,6 +114,11 @@ class App:
                 incoming=local_request(13300,path,{"content":q,"echo_id":rid})
                 mid=incoming["id"];need(type(mid) is int and mid>0,"invalid_incoming")
                 self.advance(rid,"opening","incoming",incoming=mid)
+                with self.db() as c:
+                    prior=c.execute("SELECT 1 FROM events WHERE actor=? AND rowid<(SELECT rowid FROM events WHERE req=?) AND state!='done' LIMIT 1",(actor,rid)).fetchone()
+                if prior:
+                    self.advance(rid,"incoming","waiting",reason="prior_event_requires_review")
+                    return self.status(rid)
                 # Only this UI triggers the local n8n webhook. The workflow rereads the actual inbox record.
                 local_request(15678,"/webhook/pilot-integrated-v1",{"request":rid,"incoming":mid},{"X-Pilot-Integrated":self.cfg["hook_token"]},timeout=110)
             except Exception:
@@ -107,7 +126,11 @@ class App:
                 pass
             return self.status(rid)
     def status(self,rid):
-        row=self.row(uid(rid));return json.loads(row["receipt"]) if row["state"]=="done" else {"status":"held","request":rid,"state":row["state"],"incoming":row["incoming"],"outgoing":row["outgoing"],"reason":row["reason"]}
+        row=self.row(uid(rid))
+        if row["state"]=="done":return json.loads(row["receipt"])
+        with self.db() as c:
+            parts=[dict(x) for x in c.execute("SELECT pos,state,outgoing FROM parts WHERE req=? ORDER BY pos",(rid,))]
+        return {"status":"held","request":rid,"state":row["state"],"incoming":row["incoming"],"outgoing":row["outgoing"],"reason":row["reason"],"parts":parts}
     def step(self,op,body):
         rid=uid(body.get("request"));row=self.row(rid);mid=body.get("incoming");need(type(mid) is int and row["incoming"]==mid,"wrong_incoming")
         key={"request":rid,"incoming":mid}
@@ -121,28 +144,61 @@ class App:
         if op=="plan":
             self.advance(rid,"claimed","planning")
             p,asset=self.plan(row)
-            self.advance(rid,"planning","prepared",plan=json.dumps(p,ensure_ascii=False),asset=asset);return key
+            private=p["decision"]=="handoff"
+            parts=message_parts(p["reply"],asset,private)
+            with self.db() as c:
+                need(c.execute("UPDATE events SET state='prepared',plan=?,asset=? WHERE req=? AND state='planning'",(json.dumps(p,ensure_ascii=False),asset,rid)).rowcount==1,"held")
+                c.executemany("INSERT INTO parts(req,pos,content,asset,private) VALUES(?,?,?,?,?)",[(rid,i,content,aid,private) for i,(content,aid) in enumerate(parts,1)])
+            return key
         need(op=="deliver","unknown_step")
-        self.advance(rid,"prepared","sending")
-        p=json.loads(row["plan"]);art=self.asset(row["asset"]) if row["asset"] else None
-        private=p["decision"]=="handoff";need(not (art and private),"private_art_mismatch")
-        fields={"content":p["reply"],"message_type":"outgoing","private":"true" if private else "false"}
+        with self.send_locks[row["actor"]]:
+            return self.deliver(rid)
+    def post_part(self,row,part):
+        art=self.asset(part["asset"]) if part["asset"] else None
+        private=bool(part["private"])
+        fields={"content":part["content"],"message_type":"outgoing","private":"true" if private else "false"}
         if art:
             data,ct=multipart(fields,self.artbytes(art))
         else:
             data={**fields,"private":private};ct="application/json"
         response=local_request(13300,self.chatpath(row["actor"]),data,{"api_access_token":self.cfg["agent_token"]},ct)
         oid=response["id"];need(type(oid) is int and oid>0,"invalid_outcome")
-        self.advance(rid,"sending","checking",outgoing=oid)
+        return oid
+    def confirm_part(self,row,part):
+        oid=part["outgoing"];private=bool(part["private"])
+        art=self.asset(part["asset"]) if part["asset"] else None
         m=next((m for m in self.messages(row["actor"]) if m.get("id")==oid),None)
-        need(m and m["private"]==private and m["content"]==p["reply"],"message_readback_mismatch")
+        need(m and m["message_type"]==1 and m["private"]==private and m["content"]==part["content"],"message_readback_mismatch")
         attachment=None
         if art:
             values=m.get("attachments",[]);need(len(values)==1,"attachment_missing")
             f=values[0];need(sha(stored_image(f["data_url"]))==art["sha256"],"attachment_hash_mismatch")
             attachment={"id":f["id"],"asset":art["id"],"group":art["group"],"sha256":art["sha256"],"bytes":art["bytes"]}
-        result={"status":"ok","request":rid,"actor":row["actor"],"conversation":self.cfg["actors"][row["actor"]]["conversation"],"incoming":mid,"outgoing":oid,"private":private,"reply":p["reply"],"provider":p["provider"],"ai":p["ai"],"attachment":attachment}
-        self.advance(rid,"checking","done",receipt=json.dumps(result,ensure_ascii=False));return result
+        else:need(not m.get("attachments"),"unexpected_attachment")
+        return attachment
+    def deliver(self,rid):
+        row=self.row(rid)
+        if row["state"]=="done":return self.status(rid)
+        if row["state"]=="prepared":self.advance(rid,"prepared","sending")
+        else:need(row["state"]=="sending","held")
+        with self.db() as c:parts=[dict(x) for x in c.execute("SELECT * FROM parts WHERE req=? ORDER BY pos",(rid,))]
+        need(parts,"missing_plan")
+        receipts=[]
+        for part in parts:
+            key=(rid,part["pos"])
+            if part["state"]=="pending":
+                with self.db() as c:need(c.execute("UPDATE parts SET state='sending' WHERE req=? AND pos=? AND state='pending'",key).rowcount==1,"held")
+                oid=self.post_part(row,part)
+                with self.db() as c:c.execute("UPDATE parts SET state='checking',outgoing=? WHERE req=? AND pos=? AND state='sending'",(oid,*key))
+                part.update(state="checking",outgoing=oid)
+            need(part["state"]!="sending","part_delivery_unknown")
+            if part["state"]=="checking":
+                part["attachment"]=json.dumps(self.confirm_part(row,part))
+                with self.db() as c:c.execute("UPDATE parts SET state='confirmed',attachment=? WHERE req=? AND pos=? AND state='checking'",(part["attachment"],*key))
+            receipts.append({"pos":part["pos"],"content":part["content"],"outgoing":part["outgoing"],"attachment":json.loads(part["attachment"]),"state":"confirmed"})
+        p=json.loads(row["plan"]);oid=receipts[-1]["outgoing"]
+        result={"status":"ok","request":rid,"actor":row["actor"],"conversation":self.cfg["actors"][row["actor"]]["conversation"],"incoming":row["incoming"],"outgoing":oid,"private":p["decision"]=="handoff","reply":p["reply"],"provider":p["provider"],"ai":p["ai"],"attachment":receipts[-1]["attachment"],"parts":receipts}
+        self.advance(rid,"sending","done",outgoing=oid,receipt=json.dumps(result,ensure_ascii=False));return result
     def asset(self,aid):
         return next(a for a in self.catalog["assets"] if a["id"]==aid)
     def artbytes(self,a):
@@ -151,14 +207,33 @@ class App:
         b=p.read_bytes();need(len(b)==a["bytes"]<=1_500_000 and b.startswith(b"\xff\xd8") and sha(b)==a["sha256"],"asset_integrity");return b
     def plan(self,row):
         from policy import prepare
-        context,fixed,decision,group=prepare(row["question"],json.loads(row["options"]),self.prov,self.catalog,provider.query)
+        opts=json.loads(row["options"])
+        with self.db() as c:
+            prev=c.execute("SELECT plan FROM events WHERE actor=? AND rowid<(SELECT rowid FROM events WHERE req=?) ORDER BY rowid DESC LIMIT 1",(row["actor"],row["req"])).fetchone()
+        previous=json.loads(prev["plan"]) if prev and prev["plan"] else {}
+        question=self.followup(row["question"],opts,previous)
+        context,fixed,decision,group=prepare(question,opts,self.prov,self.catalog,provider.query)
+        repeated=context["category"]=="clarify" and previous.get("reply","").endswith(fixed)
+        undecided=context["category"]=="chat" and normals(question).strip(" ?!.") in ("nao sei","sim","isso","ok")
+        if previous.get("provider",{}).get("category")=="clarify" and (repeated or undecided):
+            context={"category":"unresolved_price"};fixed="A descrição do serviço precisa de confirmação pela equipe.";decision="handoff";group=None
         asset=self.asset(row["reserved_asset"]) if group else None
         if asset:need(asset["group"]==group,"reserved_group_mismatch")
         if asset:self.artbytes(asset)
         session=str(uuid.uuid5(uuid.NAMESPACE_URL,"isolated-chatwoot:"+str(self.cfg["inbox"])+":"+row["actor"]))
-        ai=self.ai({"id":row["req"],"session":session,"text":row["question"],"context":context},self.cfg["hmac"].encode())
-        answer=fixed or ai["reply"];action=decision or ai["decision"]
+        trusted=dict(context,local_reply=fixed,local_decision=decision) if fixed else context
+        ai=self.ai({"id":row["req"],"session":session,"text":row["question"],"context":trusted},self.cfg["hmac"].encode())
+        answer=ai["reply"];action=ai["decision"]
         return {"reply":answer,"decision":action,"provider":context,"ai":{k:ai[k] for k in ("model","tokens","estimate_micro_usd","mode","kb_version")}},asset["id"] if asset and action=="answer" else None
+    def followup(self,q,options,previous):
+        if options["intent"]!="auto" or previous.get("provider",{}).get("category")!="clarify":return q
+        short=normals(q).strip(" ?!.");asked=normals(previous["reply"])
+        if "coloracao" in asked and re.fullmatch(r"(?:(?:da|de|na) )?(barba|protese)",short):return "Qual o preço da coloração "+short+"?"
+        if "barba" in asked and short in ("simples","completa","barba simples","barba completa"):return "Qual o preço da barba "+short+"?"
+        if short=="sim":
+            for item in ("hidratacao intensa","sobrancelha na navalha"):
+                if item in asked:return "Qual o preço de "+item+"?"
+        return q
     def ui(self,msg):
         op=msg.get("op")
         if op=="ask":return self.submit(msg)
@@ -170,6 +245,28 @@ class App:
         with self.db() as c:
             rows=c.execute("SELECT req,question FROM events WHERE actor=? ORDER BY rowid DESC LIMIT 12",(actor,)).fetchall()
         return {"status":"ok","conversation":self.cfg["actors"][actor]["conversation"],"services":{k:v["name"] for k,v in self.prov["services"].items()},"professionals":{k:v["name"] for k,v in self.prov["professionals"].items()},"events":[{"question":x["question"],**self.status(x["req"])} for x in reversed(rows)]}
+
+def message_parts(reply,asset,private):
+    if private:
+        need(not asset,"private_art_mismatch")
+        return [(reply,None)]
+    # Preserve short answers, decimal numbers and complete emphasis spans.
+    reply=re.sub(r"\*\*([^*]+)\*\*",r"*\1*",reply.strip())
+    need(reply.count("*")%2==0,"unbalanced_emphasis")
+    chunks=[];current="";end=0
+    for match in re.finditer(r"\*[^*]+\*|https?://\S+|R\$\s*[\d.,]+|\S+",reply):
+        token=match.group();original_gap=reply[end:match.start()]
+        gap="\n" if "\n" in original_gap else " " if original_gap else ""
+        end=match.end()
+        need(len(token)<=250,"part_too_long")
+        if current and gap and (gap=="\n" or len(current)+len(gap)+len(token)>250 or (len(current)>=80 and current.endswith((".","!","?",";")))):
+            need(current.count("*")%2==0,"cannot_split_emphasis");chunks.append((current,None));current=""
+        current=current+gap+token if current else token
+        need(len(current)<=250,"part_too_long")
+    if current:chunks.append((current,None))
+    need(0<len(chunks)<=10-bool(asset),"part_count")
+    if asset:chunks.append(("Tabela de serviços" if asset.startswith("servicos-") else "Planos do Clube",asset))
+    return chunks
 
 class Web(http.server.BaseHTTPRequestHandler):
     def log_message(self,*args):pass

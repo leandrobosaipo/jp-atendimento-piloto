@@ -6,9 +6,10 @@ let busy=false;
 function lock(v){busy=v;['#send','#actor','#refresh'].forEach(s=>$(s).disabled=v)}
 async function show(evt,expand=false){
  const div=el('article','');div.className='card';div.append(el('strong','Cliente fictício '+$('#actor').value),el('p',evt.question||''));$('#messages').append(div);
- if(evt.status!=='ok'){div.append(el('small','Tentativa retida ('+(evt.state||'sem confirmação')+'). Consulte o histórico antes de qualquer nova mensagem.'));return}
- div.append(el('strong',evt.private?'Revisão humana · nota privada':'Resposta no Chatwoot'),el('p',evt.reply));
- div.append(el('small','Conversa '+evt.conversation+' · Entrada '+evt.incoming+' · Saída '+evt.outgoing+' · '+(evt.ai?.model||'')+' · '+(evt.provider?.observed_at?'AppBarber '+evt.provider.observed_at:(evt.provider?.source||'Base privada'))));
+ if(evt.status!=='ok'){div.append(el('small','Tentativa retida ('+(evt.state||'sem confirmação')+'). Consulte o histórico antes de qualquer nova mensagem.'));for(const p of evt.parts||[])div.append(el('p','Parte '+p.pos+' · '+p.state+(p.outgoing?' · #'+p.outgoing:'')));return}
+ div.append(el('strong',evt.private?'Revisão humana · nota privada':'Resposta no Chatwoot'));
+ for(const p of evt.parts||[{content:evt.reply,outgoing:evt.outgoing}]){const box=el('section','');box.className='bubble';const line=el('p','');for(const piece of p.content.split(/(\*[^*\n]+\*)/g)){if(piece.startsWith('*')&&piece.endsWith('*')&&piece.length>2)line.append(el('strong',piece.slice(1,-1)));else line.append(document.createTextNode(piece))}box.append(line,el('small','Mensagem #'+p.outgoing));div.append(box)}
+ div.append(el('small','Conversa '+evt.conversation+' · Entrada '+evt.incoming+' · '+(evt.ai?.mode==='local'?'Resposta local · 0 tokens':evt.ai?.model||'')+' · '+(evt.provider?.observed_at?'AppBarber '+evt.provider.observed_at:(evt.provider?.source==='approved_artwork'?'Arte aprovada':'Base privada'))));
  if(evt.attachment){
    const button=el('button','Ver tabela anexada');div.append(el('p',''),button);
    button.addEventListener('click',async()=>{button.disabled=true;try{const a=await call({op:'asset',request:evt.request});if(a.status!=='ok')throw Error();const bytes=Uint8Array.from(atob(a.image),c=>c.charCodeAt(0));const image=el('img','');image.alt='Tabela aprovada · '+evt.attachment.group;

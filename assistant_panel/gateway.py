@@ -141,6 +141,12 @@ CREATE INDEX IF NOT EXISTS turns_session ON turns(session,stamp);""")
             if n>=SESSION_REQUESTS:raise Refused("session_limit")
             hist=[tuple(v) for v in self.db.execute("SELECT question,answer FROM turns WHERE session=? AND status='complete' AND question IS NOT NULL ORDER BY rowid DESC LIMIT 3",(sid,))][::-1]
             voice_id,opening=persona(self.kb)
+            if trusted is not None and "local_reply" in trusted:
+                words=trusted["local_reply"];decision=trusted.get("local_decision")
+                if not isinstance(words,str) or not 0<len(words)<=1600 or decision not in ("answer","handoff"):raise Refused("invalid_context")
+                if not hist and decision=="answer":words=opening+" "+words
+                self.db.execute("INSERT INTO turns(id,session,day,stamp,hash,question,status,charge,answer,decision,sources,input_tokens,output_tokens,estimate) VALUES(?,?,?,?,?,?,'complete',0,?,?,?,0,0,0)",(rid,sid,day,stamp,digest,q,words,decision,"[]"))
+                self.db.commit();return self.response(self.db.execute("SELECT * FROM turns WHERE id=?",(rid,)).fetchone())
             if greeting(q):
                 words=(opening+" " if not hist else "")+"Como posso ajudar?"
                 self.db.execute("INSERT INTO turns(id,session,day,stamp,hash,question,status,charge,answer,decision,sources,input_tokens,output_tokens,estimate) VALUES(?,?,?,?,?,?,'complete',0,?,'answer',?,0,0,0)",(rid,sid,day,stamp,digest,q,words,json.dumps([voice_id] if voice_id else [])))
