@@ -85,6 +85,16 @@ e o preço coerentes com a arte aprovada correspondente. Reprocessar o mesmo
 evento deve preservar a variante já reservada, não sortear e enviar outra.
 As artes, seus manifestos e os recibos privados continuam fora do repositório.
 
+## Retenção do histórico
+
+O prazo desejado para guardar o histórico das conversas é **1 ano** (opção B),
+sujeito a revisão conforme as necessidades da JP e as regras de proteção de dados.
+A retenção ainda não foi implementada nem testada.
+
+Este registro não altera configurações de retenção, não ativa limpeza automática
+e não apaga dados. Antes de implementar, definir e validar o marco de contagem,
+o alcance sobre conversas, anexos e cópias, e eventuais exceções aplicáveis.
+
 ## Estado técnico e alcance das provas existentes
 
 A referência consultada é a revisão
@@ -131,6 +141,8 @@ ativar agora nem substitui a definição da release e da janela de ativação.
       sem escalonar confirmações básicas de agenda.
 - [ ] Validar identidade dos eventos, recibos, responsabilidade única de envio,
       retomada e tratamento de resultados incertos.
+- [ ] Definir, implementar e testar a retenção desejada de 1 ano, sujeita a revisão,
+      sem tratar este registro como autorização para apagar dados.
 - [ ] Publicar e aprovar os checks do SHA exato da futura implementação.
 - [ ] Definir release, janela de ativação e retorno, com autorização específica.
 
