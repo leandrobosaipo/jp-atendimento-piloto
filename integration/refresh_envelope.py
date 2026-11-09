@@ -177,8 +177,9 @@ if __name__ == "__main__":
     for name in ("source-commit", "integration-commit", "panel-commit", "machine-id", "candidate", "backup", "expected-old-sha256", "expected-new-sha256"):
         parser.add_argument("--" + name, required=True)
     parser.add_argument("--apply", action="store_true")
+    args = parser.parse_args()
     try:
-        print(json.dumps(execute(parser.parse_args())))
+        print(json.dumps(execute(args)))
     except BaseException:
         # Do not leak JSON parsing snippets, subprocess output or credential values.
         print('{"status":"held","reason":"refresh_or_rollback_requires_private_review"}', file=sys.stderr)
