@@ -13,11 +13,15 @@ class Tests(unittest.TestCase):
         self.root = Path(self.tmp.name).resolve()
         self.path = self.root / "envelope.json"
         self.old = json.dumps({"origin": ORIGIN, "cookieHeader": "session=old-fixture",
+                               "source_generation": 1, "source_verified_at": "2026-01-01T00:00:00.000Z",
+                               "captured_at": "2026-01-01T00:00:00.000000+00:00",
                                "services": {"fixture": {"id": "1"}},
                                "professionals": {"human": {"human_only": True}},
                                "policy": {"write": False}}).encode()
         self.path.write_bytes(self.old); self.path.chmod(0o600)
-        self.candidate = json.dumps({"origin": ORIGIN, "cookieHeader": "session=new-fixture"}).encode()
+        self.candidate = json.dumps({"origin": ORIGIN, "cookieHeader": "session=new-fixture",
+                                     "source_generation": 2, "source_verified_at": "2026-01-02T00:00:00.000Z",
+                                     "captured_at": "2026-01-02T00:00:00.000000+00:00"}).encode()
         self.backup = self.root / "archived.json"
 
     def tearDown(self): self.tmp.cleanup()
@@ -26,6 +30,8 @@ class Tests(unittest.TestCase):
         after = json.loads(build(self.old, self.candidate))
         before = json.loads(self.old)
         self.assertNotEqual(after.pop("cookieHeader"), before.pop("cookieHeader"))
+        for name in ("source_generation", "source_verified_at", "captured_at"):
+            after.pop(name); before.pop(name)
         self.assertEqual(after, before)
 
     def test_rejects_catalog_origin_and_header_injection(self):
@@ -33,7 +39,8 @@ class Tests(unittest.TestCase):
                  {"origin": "https://invalid.example", "cookieHeader": "a=b"},
                  {"origin": ORIGIN, "cookieHeader": "a=b\r\nInjected: value"}]
         for candidate in cases:
-            with self.assertRaises(RuntimeError): build(self.old, json.dumps(candidate).encode())
+            fresh = json.loads(self.candidate); fresh.update(candidate)
+            with self.assertRaises(RuntimeError): build(self.old, json.dumps(fresh).encode())
 
     def test_success_ack_after_reloaded_credential(self):
         calls = []
@@ -68,6 +75,24 @@ class Tests(unittest.TestCase):
         with self.assertRaises(RuntimeError): private(self.path)
         link = self.root / "link"; link.symlink_to(self.path)
         with self.assertRaises(RuntimeError): private(link)
+
+    def test_rejects_generation_and_timestamp_regression(self):
+        for field, value in (("source_generation", 1), ("source_generation", True),
+                             ("source_verified_at", "2025-01-01T00:00:00Z"),
+                             ("captured_at", "2026-01-02T00:00:00")):
+            candidate = json.loads(self.candidate); candidate[field] = value
+            with self.assertRaises(RuntimeError): build(self.old, json.dumps(candidate).encode())
+
+    def test_third_party_drift_withholds_rollback(self):
+        third_party = b'{"third_party":"preserve"}'
+        def check(_):
+            self.path.write_bytes(third_party)
+            raise RuntimeError("synthetic concurrent change")
+        with self.assertRaisesRegex(RuntimeError, "rollback_withheld"):
+            transition(self.path, self.candidate, self.backup, stop=lambda: None,
+                       start=lambda: None, check=check, invariant=lambda: None)
+        self.assertEqual(self.path.read_bytes(), third_party)
+        self.assertEqual(private(self.backup), self.old)
 
 
 if __name__ == "__main__": unittest.main()
