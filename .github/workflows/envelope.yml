@@ -1,0 +1,18 @@
+name: Validate read-only envelope refresh
+on:
+  push:
+    paths: ['integration/refresh_envelope.py', 'integration/test_refresh_envelope.py', '.github/workflows/envelope.yml']
+  workflow_dispatch:
+permissions: {contents: read}
+jobs:
+  envelope:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 3
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+      - run: |
+          python3 integration/test_refresh_envelope.py
+          python3 integration/test_provider.py
+          python3 integration/test_policy.py
+          python3 integration/test_parts.py
+          python3 integration/refresh_envelope.py --help >/dev/null
