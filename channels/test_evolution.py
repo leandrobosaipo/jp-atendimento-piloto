@@ -142,7 +142,11 @@ class TestContract(unittest.TestCase):
 
 if __name__=="__main__":
     if os.getenv("REQUIRE_NETWORK_ISOLATION")=="1":
-        import socket
+        import errno,socket
         assert {name for _,name in socket.if_nameindex()}=={"lo"}
-        assert len(Path("/proc/net/route").read_text().splitlines())==1
+        routes=[line.split() for line in Path("/proc/net/route").read_text().splitlines() if line.strip()]
+        assert all(row[0] in ("Iface","lo") for row in routes)
+        # UDP connect performs only a route lookup; it sends no datagram.
+        with socket.socket(socket.AF_INET,socket.SOCK_DGRAM) as probe:
+            assert probe.connect_ex(("192.0.2.1",9)) in (errno.ENETUNREACH,errno.EHOSTUNREACH)
     unittest.main(verbosity=2)
