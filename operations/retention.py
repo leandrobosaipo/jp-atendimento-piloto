@@ -124,6 +124,10 @@ def backup(root, source, destination, apply=False):
         target = dest / 'snapshot.sqlite3'
         os.close(exclusive_file(target))
         with contextlib.closing(sqlite3.connect(target)) as out:
+            # Only this new private destination has a single writer. Keep its
+            # WAL index in memory; some VFS builds otherwise leave a -shm file.
+            require(out.execute('PRAGMA locking_mode=EXCLUSIVE').fetchone()[0] == 'exclusive',
+                    'Cannot isolate snapshot connection')
             conn.backup(out)
             # Backup inherits WAL mode. Finalize a standalone DELETE-mode file
             # before hashing, and explicitly close all handles before publication.

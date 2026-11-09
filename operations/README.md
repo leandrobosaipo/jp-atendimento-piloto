@@ -81,7 +81,10 @@ Arquivos novos usam 0600 e bundles 0700. O banco copiado inclui todas as tabelas
 
 A API SQLite de backup produz snapshot consistente de **um** banco, incluindo
 WAL confirmado. `integrity_check`, `foreign_key_check`, tamanho e SHA-256 são
-verificados. O snapshot é finalizado em journal_mode=DELETE e todas as conexões
+verificados. Somente a conexão do destino novo usa locking_mode=EXCLUSIVE,
+evitando um índice WAL persistente em builds SQLite/VFS que deixam -shm.
+O modo de bloqueio e o journal da origem são preservados.
+O snapshot é finalizado em journal_mode=DELETE e todas as conexões
 são fechadas explicitamente antes de publicar o manifesto. Bundles e destinos
 com sidecars -wal, -shm ou -journal (inclusive symlinks pendentes) são recusados.
 A verificação usa leitura imutável do arquivo autenticado e compara também um

@@ -42,7 +42,10 @@ class RetentionTests(unittest.TestCase):
         return r.backup(self.root, self.db, 'bundle', True)
 
     def test_backup_wal_and_restore_full_database(self):
+        before = self.conn.execute('PRAGMA locking_mode').fetchone()[0]
         manifest = self.backup()
+        self.assertEqual(self.conn.execute('PRAGMA locking_mode').fetchone()[0], before)
+        self.assertEqual(self.conn.execute('PRAGMA journal_mode').fetchone()[0], 'wal')
         self.assertEqual(manifest['coverage']['production_ready'], False)
         r.restore(self.root, 'bundle', 'restored.sqlite3', True)
         with r.read_db(self.root / 'restored.sqlite3') as conn:
