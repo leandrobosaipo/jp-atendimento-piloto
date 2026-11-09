@@ -1,5 +1,37 @@
 # Fronteiras dos canais e caixa de saída: candidato offline
 
+## Journal de entrada para futuro receptor Dell
+
+`ingress.Journal` reutiliza o SQLite privado do `Outbox` e os mesmos eventos
+normalizados, sem duplicar payloads. A implementação permanece em Python para
+reutilizar esse contrato e a transação existente; introduzir Rust nesta fronteira
+agora criaria uma segunda implementação e migração sem benefício demonstrado.
+
+Evolution exige comparação constante do segredo privado (mínimo 32 bytes) antes
+da normalização; Instagram reutiliza HMAC dos bytes originais. O futuro receptor
+deve extrair a credencial do cabeçalho autenticado e fornecer configuração privada,
+nunca confiar em flags do JSON. Não existe servidor HTTP ou configuração de canal.
+
+O retorno `committed_locally` só ocorre depois do commit SQLite com
+`synchronous=FULL`. Falha de commit propaga erro, sem ACK. Replay mantém a mesma
+sequência e identidade; alteração do mesmo ID bloqueia e reverte todo o lote.
+O journal não apaga eventos. `high_water()` captura o limite e
+`read(after=..., through=..., limit=...)` pagina até esse limite, excluindo novas
+entradas. Sequências podem ter lacunas; avance pelo último valor lido, sem presumir
+contiguidade. Leitura inclui texto privado: somente consumidores locais autorizados.
+
+Execute `python3 channels/test_ingress.py` (no macOS, use um `TMPDIR` sem symlinks,
+como `/private/tmp`). Fixtures cobrem processo novo, replay, conflito, concorrência,
+autenticação, lote atômico e falha transacional. Não comprovam perda elétrica,
+restauração do disco Dell, ACK HTTP real ou integração com n8n. Apenas os tipos de
+texto suportados pelos normalizadores são aceitos; grupos, mídia, recibos e demais
+callbacks precisam de contrato próprio antes de substituir o webhook atual.
+
+Não há consumo automático, confirmação de visita, cursor persistido do consumidor,
+backfill de eventos antigos, fila de processamento nem envio. A futura integração
+deve manter processamento idempotente e ACK HTTP somente após este retorno; um ACK
+perdido deve reconciliar o mesmo ID. Publicação desta fonte não autoriza ativação.
+
 Este módulo não instala servidor, callback, rota, segredo ou transporte. Não está
 ligado à Evolution, Instagram, Chatwoot ou atendimento atual. O n8n continua sendo
 o único dono do recebimento e envio da operação existente no Mac Mini.
