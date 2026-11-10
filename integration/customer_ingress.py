@@ -400,6 +400,9 @@ def process_channel(raw, record, workflow, execution, epoch, cfg, app, planner, 
             "status": "retained", "intake": intake["request"],
             "reservation": reservation.get("reservation"),
             "plan": plan.get("status"), "transport_attempts": 0}
+    if plan.get("service_record"):
+        need(plan["service_record"]==record,"wrong_service_record")
+        result.update(service_record=record,service_state=plan["service_state"])
     if cfg.get("first_dispatch_socket") and plan.get("status")=="prepared_held":
         need(app.claimed is not None and intake["execution"]==execution,"first_claim_required")
         app.claimed.check(record,workflow,execution,epoch)

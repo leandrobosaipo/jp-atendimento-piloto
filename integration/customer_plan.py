@@ -51,6 +51,12 @@ class HeldPlanner:
                 asset_id TEXT, asset_sha256 TEXT, state TEXT NOT NULL CHECK(state='held_before_transport'),
                 created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
                 PRIMARY KEY(reservation,position))""")
+            db.execute("""CREATE TABLE IF NOT EXISTS service_requests (
+                record TEXT PRIMARY KEY, reservation TEXT NOT NULL UNIQUE, account INTEGER NOT NULL,
+                inbox INTEGER NOT NULL, contact INTEGER NOT NULL, conversation INTEGER NOT NULL,
+                message INTEGER NOT NULL, text_hash TEXT NOT NULL, mode TEXT NOT NULL,
+                category TEXT NOT NULL, state TEXT NOT NULL DEFAULT 'pending',
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)""")
         parent = pathlib.Path(self.path).resolve().parent
         fd = os.open(parent, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
         try:
@@ -122,8 +128,19 @@ class HeldPlanner:
         public_club = (context.get("category") == "club" and group == "clube-jp" and
                        isinstance(text, str) and 0 < len(text) <= 600)
         if not (decision == "answer" and (public_table or public_club)):
+            # Retain the native request for the scheduling, service or human worker.
+            # The original incoming Chatwoot message remains the content authority.
+            columns=("record","reservation","account","inbox","contact","conversation","message","text_hash","mode")
+            values=tuple(row[k] for k in columns)+(context["category"],)
+            with self.db() as db:
+                db.execute("BEGIN IMMEDIATE")
+                db.execute("""INSERT OR IGNORE INTO service_requests
+                    (record,reservation,account,inbox,contact,conversation,message,text_hash,mode,category)
+                    VALUES(?,?,?,?,?,?,?,?,?,?)""",values)
+                saved=db.execute("SELECT * FROM service_requests WHERE record=?",(row["record"],)).fetchone()
+                need(saved and tuple(saved[k] for k in (*columns,"category"))==values,"service_request_conflict")
             return {"status": "held", "request": row["request"], "reservation": row["reservation"],
-                    "reason": "public_plan_not_applicable"}
+                    "reason": "public_plan_not_applicable","service_record":row["record"],"service_state":saved["state"]}
         need(not query_calls, "personal_lookup_forbidden")
         pool = self.pools[group]
         with self.db() as db:

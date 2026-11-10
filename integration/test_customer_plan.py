@@ -176,6 +176,21 @@ class TestHeldPlan(unittest.TestCase):
         with self.plan.db() as db:
             self.assertEqual(db.execute("SELECT count(*) FROM held_parts").fetchone()[0], 0)
 
+    def test_service_requests_survive_restarts_and_require_their_own_handler(self):
+        for label,question,category in (("A","Quais horários amanhã?","availability"),
+                ("B","Bom dia!","chat"),("C","Estou com uma ferida.","sensitive")):
+            reservation=self.inbound(KNOWN,"FIXTURECASE"+label,question)
+            receipt=self.plan.prepare(self.query(reservation))
+            self.assertEqual((receipt["status"],receipt["service_state"]),("held","pending"))
+            self.assertEqual(self.plan.prepare(self.query(reservation)),receipt)
+            with self.plan.db() as db:
+                row=db.execute("SELECT * FROM service_requests WHERE record=?",(receipt["service_record"],)).fetchone()
+                self.assertEqual((row["reservation"],row["category"],row["message"]),
+                                 (reservation["reservation"],category,reservation["message"]))
+        with self.plan.db() as db:
+            self.assertEqual(db.execute("SELECT count(*) FROM service_requests").fetchone()[0],3)
+            self.assertEqual(db.execute("SELECT count(*) FROM held_parts").fetchone()[0],0)
+
     def test_wrong_reservation_or_inbound_context_never_prepares(self):
         reservation = self.inbound(KNOWN, "FIXTUREKNOWN003")
         with self.assertRaises(PlanHeld):
