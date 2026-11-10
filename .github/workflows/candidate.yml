@@ -1,0 +1,40 @@
+name: Validate offline JP candidate
+on:
+  push:
+    paths: ['channels/**', 'business/**', 'operations/**', 'integration/**', '.github/workflows/candidate.yml']
+  workflow_dispatch:
+permissions: {contents: read}
+jobs:
+  offline:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+      - name: Test offline channel, transaction and recovery boundaries
+        run: |
+          sudo unshare --net -- setpriv --reuid="$(id -u)" --regid="$(id -g)" --clear-groups --no-new-privs env -i PATH=/usr/bin:/bin python3 -B channels/test_personal.py
+          sudo unshare --net -- setpriv --reuid="$(id -u)" --regid="$(id -g)" --clear-groups --no-new-privs env -i PATH=/usr/bin:/bin python3 -B channels/test_personal_media.py
+          sudo unshare --net -- setpriv --reuid="$(id -u)" --regid="$(id -g)" --clear-groups --no-new-privs env -i PATH=/usr/bin:/bin python3 -B channels/test_personal_media_native.py
+          sudo unshare --net -- setpriv --reuid="$(id -u)" --regid="$(id -g)" --clear-groups --no-new-privs env -i PATH=/usr/bin:/bin python3 -B channels/test_personal_media_journal.py
+          sudo unshare --net -- setpriv --reuid="$(id -u)" --regid="$(id -g)" --clear-groups --no-new-privs env -i PATH=/usr/bin:/bin REQUIRE_NETWORK_ISOLATION=1 python3 -B channels/test_evolution.py
+          python3 channels/test_bridge.py
+          python3 channels/test_ingress.py
+          python3 -m unittest business.test_transactions -v
+          python3 -m unittest operations.test_retention -v
+          python3 -m compileall -q channels business operations
+      - name: Recheck existing pilot units
+        run: |
+          python3 assistant_panel/test_gateway.py
+          python3 assistant_panel/test_monthly_budget.py
+          node assistant_panel/test_panel.cjs
+          python3 assistant_panel/test_update.py
+          python3 assistant_panel/test_maintenance.py
+          python3 integration/test_provider.py
+          python3 integration/test_policy.py
+          python3 integration/test_parts.py
+          python3 integration/test_personal_intake.py
+          python3 channels/test_dispatch_contract.py
+          python3 -B channels/test_customer_identity.py
+          sudo unshare --net -- setpriv --reuid="$(id -u)" --regid="$(id -g)" --clear-groups --no-new-privs env -i PATH=/usr/bin:/bin python3 -B channels/test_dispatch.py
+          node --check assistant_panel/cockpit/panel.js
+          node --check integration/cockpit/app.js

@@ -9,9 +9,10 @@ def facts(op,p,c):
     if op=="prices":return dict(base,name="Manutenção fictícia",price_cents=14000,currency="BRL")
     return dict(base,date=p["date"],professional_key=p["professional_key"],duration_minutes=40,slots=["15:00"],timezone="America/Cuiaba",reservation_performed=False)
 service.provider.query=facts
-advance=service.App.advance
-def lose_test_ack(self,rid,old,new,**fields):
-    if old=="sending" and new=="checking" and self.row(rid)["question"]=="CI ambiguous delivery fixture":raise service.Stop("test_missing_ack")
-    return advance(self,rid,old,new,**fields)
-service.App.advance=lose_test_ack
+post=service.App.post_part
+def lose_test_ack(self,row,part):
+    oid=post(self,row,part)
+    if row["question"]=="CI ambiguous delivery fixture" and part["pos"]==2:raise service.Stop("test_missing_ack")
+    return oid
+service.App.post_part=lose_test_ack
 service.serve()
