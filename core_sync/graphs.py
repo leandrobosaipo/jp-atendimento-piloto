@@ -3,7 +3,8 @@ import copy
 from urllib.parse import urlsplit
 
 ROUTES={'manual':['/api/agenda-sync/run'],'daily':['/api/n8n/stages/full-sync'],
-        'renewal':['/api/n8n/stages/maintenance','/api/n8n/stages/renewal-run']}
+        'renewal':['/api/n8n/stages/maintenance','/api/n8n/stages/renewal-run'],
+        'relay':['/api/n8n/stages/before-dispatch','/api/n8n/manual']}
 def bind(row,role,base,ingress,hook_auth,hook_path):
     if row['active'] or row.get('activeVersionId') or row.get('pinData') or row.get('staticData'):
         raise ValueError('not_clean_inactive_draft')
@@ -25,10 +26,12 @@ def bind(row,role,base,ingress,hook_auth,hook_path):
             node['credentials']={'httpHeaderAuth':ingress}
             if role=='manual':
                 p.update(sendBody=True,specifyBody='json',jsonBody='={{ {job_id: $json.body.job_id, capability: $json.body.capability} }}')
-        elif typ=='webhook' and role=='manual':
-            triggers.append(typ);p.update(path=hook_path,httpMethod='POST',authentication='headerAuth',responseMode='onReceived')
+        elif typ=='webhook' and role in ('manual','relay'):
+            triggers.append(typ);p.update(path=hook_path,httpMethod='POST',authentication='headerAuth',responseMode='responseNode' if role=='relay' else 'onReceived')
             node['credentials']={'httpHeaderAuth':hook_auth}
-        elif typ=='scheduleTrigger' and role!='manual':
+        elif role=='relay' and typ in ('if','respondToWebhook'):
+            pass
+        elif typ=='scheduleTrigger' and role in ('daily','renewal'):
             triggers.append(typ)
         else:raise ValueError('unexpected_node')
         node.pop('webhookId',None)

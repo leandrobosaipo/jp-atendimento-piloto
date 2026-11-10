@@ -20,6 +20,9 @@ globalThis.fetch=(url,options={})=>{
     return read(u.pathname,params,options.signal);
   }
   if(!u.search&&!u.hash&&u.href==="http://jp-appbarber-renewal:8795/run-once"&&method==="POST")return nativeFetch("http://127.0.0.1:8795/run-once",{...options,redirect:"error"});
-  if(!u.search&&!u.hash&&u.href===process.env.CORE_MANUAL_HOOK&&method==="POST")return nativeFetch(u,{...options,redirect:"error"});
+  if(!u.search&&!u.hash&&method==="POST"){
+    if([process.env.CORE_MANUAL_HOOK,process.env.JP_N8N_MANUAL_WEBHOOK_URL].includes(u.href))return nativeFetch(u,{...options,redirect:"error"});
+    if(u.href==="http://127.0.0.1:8792/api/agenda-sync/start"&&options.headers?.["X-JP-N8N-Manual-Internal"]&&options.headers?.["X-JP-N8N-Manual-Request-Id"])return nativeFetch(u,{...options,redirect:"error"});
+  }
   throw Error("transport_denied");
 };
