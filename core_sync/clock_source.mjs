@@ -1,6 +1,6 @@
 // Only loaded in the disposable synthetic handler. Every fetch is intercepted.
 import fs from "node:fs";
-const start=Date.now(),base=Date.parse("2026-11-10T10:00:00-04:00"),RealDate=Date;
+const start=Date.now(),base=Date.parse(process.env.FIXTURE_BRAND_CLOCK==="1"?"2026-11-10T20:00:00-04:00":"2026-11-10T10:00:00-04:00"),RealDate=Date;
 globalThis.Date=class extends RealDate{
   constructor(...args){super(...(args.length?args:[base+RealDate.now()-start]));}
   static now(){return base+RealDate.now()-start;}
