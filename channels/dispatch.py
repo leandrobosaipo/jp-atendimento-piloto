@@ -34,6 +34,7 @@ class Dispatcher:
                     first TEXT PRIMARY KEY, next TEXT UNIQUE NOT NULL, payload_hash TEXT NOT NULL, until INTEGER NOT NULL);
                 CREATE TABLE IF NOT EXISTS dispatch_resume_holds (next TEXT PRIMARY KEY, reason TEXT NOT NULL);
                 CREATE TABLE IF NOT EXISTS dispatch_first_holds (attempt TEXT PRIMARY KEY);
+                CREATE TABLE IF NOT EXISTS dispatch_public_first (attempt TEXT PRIMARY KEY);
                 CREATE TABLE IF NOT EXISTS dispatch_observations (
                     attempt TEXT NOT NULL, kind TEXT NOT NULL CHECK(kind IN ('echo','delivered','read')),
                     record TEXT NOT NULL, PRIMARY KEY(attempt,kind));
@@ -125,6 +126,8 @@ class Dispatcher:
                 need(grant["until"]>int(self.clock()),"dispatch_proof_expired")
                 db.execute("INSERT INTO dispatch_attempts VALUES(?,?,?,?,?,?,?,'sending',NULL)",(attempt,source,role,body_hash,jid,owner,now))
                 db.execute("INSERT INTO dispatch_content VALUES(?,?)",(attempt,submitted_content(payload)))
+                if grant.get("require_exact_recipient"):
+                    db.execute("INSERT INTO dispatch_public_first VALUES(?)",(attempt,))
                 nxt=grant.get("next_part")
                 if nxt is not None:
                     need(body["operation"]=="sendText" and isinstance(nxt,dict) and set(nxt)=={"id","payload_sha256"} and

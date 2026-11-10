@@ -100,6 +100,7 @@ def observe_event(dispatcher, body, *, config=CONFIG, intake=Path("/var/lib/jp-m
     rows = rows if isinstance(rows,list) else [rows]
     need(0<len(rows)<=256 and all(isinstance(r,dict) for r in rows), "invalid_event_batch")
     result = {"matched":0,"waiting":0,"confirmed":0}
+    public_parts = 0
     for item in rows:
         native = item.get("keyId") or item.get("key",{}).get("id")
         if not isinstance(native,str) or not re.fullmatch(r"[A-Za-z0-9_-]{6,160}",native):
@@ -112,6 +113,9 @@ def observe_event(dispatcher, body, *, config=CONFIG, intake=Path("/var/lib/jp-m
                 continue
             authority = receipt_authority(config,attempt["attempt"],admin_uid)
             row = match_event(record,attempt,kind,*authority)
+            if db.execute("""SELECT 1 FROM dispatch_public_first f LEFT JOIN dispatch_next_grants g ON g.first=f.attempt
+                    WHERE f.attempt=? OR g.next=? LIMIT 1""",(attempt["attempt"],attempt["attempt"])).fetchone():
+                public_parts += 1
             if kind == "messages.upsert":
                 verify_echo(row,attempt["content_hash"])
                 observation = "echo"
@@ -131,6 +135,8 @@ def observe_event(dispatcher, body, *, config=CONFIG, intake=Path("/var/lib/jp-m
             result["confirmed"] += 1
         else:
             result["waiting"] += 1
+    if public_parts==len(rows)==1:
+        result["public_reply_receipt"]=True
     return result
 
 class Policy:
