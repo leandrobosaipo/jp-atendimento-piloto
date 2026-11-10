@@ -198,6 +198,49 @@ class App:
         with self.db() as c:
             parts=[dict(x) for x in c.execute("SELECT pos,state,outgoing FROM parts WHERE req=? ORDER BY pos",(rid,))]
         return {"status":"held","request":rid,"state":row["state"],"incoming":row["incoming"],"outgoing":row["outgoing"],"reason":row["reason"],"parts":parts}
+    def receive_channel(self,raw,record,workflow,execution,epoch):
+        """Admit only the verified native identity owned by this inbox in the current epoch."""
+        route=self.cfg["channel_ingress"]
+        now=int(dt.datetime.now(dt.timezone.utc).timestamp())
+        need(route["start"]<=now<route["until"] and (epoch,workflow)==(route["epoch"],route["workflow"]) and
+             re.fullmatch(r"[0-9]{1,20}",execution or ""),"closed_channel")
+        instance=route["instance"].encode()
+        need(sha(len(instance).to_bytes(4,"big")+instance+raw)==record,"wrong_record")
+        envelope=json.loads(raw)
+        need(isinstance(envelope,dict) and envelope.get("instance")==route["instance"] and
+             str(envelope.get("event","")).lower().replace("_",".")=="messages.upsert","wrong_event")
+        data=envelope["data"];key=data["key"];body=data["message"]
+        stamp=data.get("messageTimestamp")
+        need(type(stamp) is int and route["start"]<=stamp<=now+15,"outside_channel_window")
+        sender=key.get("remoteJid");native_id=key.get("id")
+        need(key.get("fromMe") is False and isinstance(sender,str) and re.fullmatch(r"[0-9]{6,20}@(lid|s\.whatsapp\.net)",sender)
+             and isinstance(native_id,str) and re.fullmatch(r"[A-Za-z0-9_-]{6,160}",native_id),"unsupported_native_identity")
+        # Alternate addresses are usable only with an independent binding to this same contact.
+        def binding(jid):
+            return route["bindings"].get(sha(instance+b"\x00"+jid.encode()))
+        actor=binding(sender)
+        need(actor in self.cfg["actors"] and actor!="personal-test","unbound_channel_identity")
+        alternate=key.get("remoteJidAlt")
+        need(not alternate or (isinstance(alternate,str) and binding(alternate)==actor),"ambiguous_channel_identity")
+        need(not key.get("participant") and not key.get("participantAlt"),"unexpected_participant")
+        text=body.get("conversation") if isinstance(body,dict) else None
+        if text is None and isinstance(body,dict):text=(body.get("extendedTextMessage") or {}).get("text")
+        need(isinstance(text,str) and 0<len(text.strip())<=600,"unsupported_native_content")
+        rid=str(uuid.uuid5(uuid.NAMESPACE_URL,"jp-channel-intake:"+route["instance"]+":"+native_id))
+        account,inbox,conv,contact=self.owner_key(actor)
+        identity=(account,inbox,conv,contact,sha(text.encode()))
+        with self.db() as db:
+            db.execute("""CREATE TABLE IF NOT EXISTS channel_intake(req TEXT PRIMARY KEY,account INTEGER,inbox INTEGER,
+                        conversation INTEGER,contact INTEGER,text_hash TEXT,first_record TEXT NOT NULL)""")
+            db.execute("INSERT OR IGNORE INTO channel_intake VALUES(?,?,?,?,?,?,?)",(rid,*identity,record))
+            saved=db.execute("SELECT account,inbox,conversation,contact,text_hash FROM channel_intake WHERE req=?",(rid,)).fetchone()
+            need(tuple(saved)==identity,"native_message_conflict")
+        r=self.submit({"actor":actor,"text":text,"request":rid})
+        if r.get("status")=="ok":outcome="processed"
+        else:
+            need(r.get("state") in ("human","waiting") and type(r.get("incoming")) is int,"channel_reconciliation_required")
+            outcome="retained"
+        return {"ok":True,"workflow":workflow,"execution":execution,"record_id":record,"status":outcome}
     def step(self,op,body):
         rid=uid(body.get("request"));row=self.row(rid);mid=body.get("incoming");need(type(mid) is int and row["incoming"]==mid,"wrong_incoming")
         key={"request":rid,"incoming":mid}
@@ -348,10 +391,19 @@ class Web(http.server.BaseHTTPRequestHandler):
     def do_POST(self):
         code=200;body={}
         try:
-            need(hmac.compare_digest(self.headers.get("X-Pilot-Adapter",""),self.server.app.cfg["adapter_token"]),"denied")
-            op=self.path.removeprefix("/");need(op in ("claim","plan","deliver"),"unknown_step")
-            n=int(self.headers.get("Content-Length","0"));need(0<n<1000,"oversize")
-            body=json.loads(self.rfile.read(n));result=self.server.app.step(op,body)
+            app=self.server.app;n=int(self.headers.get("Content-Length","0"))
+            if self.path=="/channel-inbound":
+                route=app.cfg.get("channel_ingress",{})
+                token=route.get("token","")
+                need(len(token)>=32 and hmac.compare_digest(self.headers.get("Authorization",""),"Bearer "+token),"denied")
+                need(0<n<=16384,"oversize")
+                result=app.receive_channel(self.rfile.read(n),self.headers.get("X-JP-Record-ID"),self.headers.get("X-JP-n8n-workflow-id"),
+                                           self.headers.get("X-JP-n8n-execution-id"),self.headers.get("X-JP-Owner-Epoch"))
+            else:
+                need(hmac.compare_digest(self.headers.get("X-Pilot-Adapter",""),app.cfg["adapter_token"]),"denied")
+                op=self.path.removeprefix("/");need(op in ("claim","plan","deliver"),"unknown_step")
+                need(0<n<1000,"oversize")
+                body=json.loads(self.rfile.read(n));result=app.step(op,body)
         except Exception as e:
             code=409 if isinstance(e,Stop) else 502;result={"status":"held"}
             if isinstance(body,dict) and isinstance(body.get("request"),str):
