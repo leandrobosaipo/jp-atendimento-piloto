@@ -32,6 +32,10 @@ def wrap_native(native,expected):
         for old,new in edits.items():
             if result.count(old)!=1:raise ValueError('native_contact_contract_changed')
             result=result.replace(old,new)
+        health=b"    if (req.method === 'GET' && req.url === '/healthz')"
+        if result.count(health)!=1:raise ValueError('native_health_anchor_changed')
+        hook=b"    if(req.url==='/api/contact-registration/manual')return await handleContactManual(req,res,{load,save,body,reply,config:contactConfig});\n"
+        result=b'import {handleContactManual} from "/ops-app/manual_contact.mjs";\n'+result.replace(health,hook+health)
         result=b'import {contactScope,contactSource,effectFetch,registrationPreflight} from "/ops-app/effect_client.mjs";\n'+result
     return result
 
