@@ -3,6 +3,7 @@ import {spawn} from "node:child_process";
 import {timingSafeEqual} from "node:crypto";
 import fs from "node:fs";
 import http from "node:http";
+import {inboundRoute,retainInbound} from "./inbound.mjs";
 import {createWorkerHttpServer,runRenewalWorkerOnce} from "/legacy/scripts/jp-appbarber-login-worker.mjs";
 import {decodeStateEnvelope} from "/legacy/scripts/jp-state-envelope.mjs";
 
@@ -53,6 +54,25 @@ const handler=async(req,res)=>{
  if(req.method==="GET"&&path==="/healthz"){
   try{const r=await fetch(inner+"/healthz");return send(r.status,{ok:r.ok,scope:"isolated_agenda",sending:false,agendaWrites:false});}catch{return send(503,{ok:false});}
  }
+ if(path===inboundRoute&&req.method==="POST"){
+  try{
+   const pieces=[];let size=0;
+   for await(const b of req){size+=b.length;if(size>16384)return send(413,{ok:false});pieces.push(b);}
+   const token=fs.readFileSync("/config/receiver.key","utf8").trim();
+   const find=key=>{
+    const envelope=JSON.parse(fs.readFileSync("/state/state.json"));
+    const state=JSON.parse(decodeStateEnvelope(envelope,Buffer.from(cfg.stateKey,"hex")));
+    return (state.jp_durable_inbox||[]).filter(row=>row.message_id===key);
+   };
+   const forward=async raw=>{
+    const r=await fetch(inner+inboundRoute,{method:"POST",headers:{"Content-Type":"application/json","Authorization":"Bearer "+cfg.scheduler,"X-JP-n8n-workflow-id":id,"X-JP-n8n-execution-id":exec},body:raw,signal:AbortSignal.timeout(20000)});
+    return {ok:r.ok,body:await r.json()};
+   };
+   const result=await retainInbound({raw:Buffer.concat(pieces),id:req.headers["x-jp-record-id"],workflow:id,execution:exec,auth:req.headers.authorization,
+    expectedWorkflow:roles.JP_N8N_INBOUND_WORKFLOW_ID,token,grant:JSON.parse(fs.readFileSync("/state/grant.json")),instance:cfg.instance,stateDir:"/state",find,forward});
+   return send(result.status,result.body);
+  }catch{return send(409,{ok:false,status:"inbound_held"});}
+ }
  if(req.method!=="POST"||!Object.hasOwn(paths,path))return send(404,{ok:false});
  if(!id||paths[path]!==id||!/^\d{1,20}$/.test(exec||"")||!equal(req.headers.authorization,"Bearer "+cfg.ingress))return send(403,{ok:false});
  if(busy.has(path))return send(409,{ok:false,reason:"busy"});
@@ -81,7 +101,7 @@ const handler=async(req,res)=>{
   const safe={ok:obj.ok===true,status:obj.status||null,job_id:obj.job_id||null,duplicate:obj.duplicate===true,
     ...(obj.result?.status?{worker_result:obj.result.status}:{}),...(obj.error?{error:String(obj.error).replace(/[^a-z_]/g,"").slice(0,70)}:{})};
   if(path==="/api/n8n/stages/reply-next"&&r.ok){
-   assert(obj.has_task===false&&obj.reason==="paused_or_busy");Object.assign(safe,{has_task:false,reason:obj.reason});
+   assert(obj.has_task===false&&obj.status==="paused");safe.has_task=false;
   }
   if(path==="/api/n8n/stages/support"&&r.ok){
    assert(obj.status==="paused"&&obj.attempted===0&&obj.reason==="n8n_send_gate_disabled");Object.assign(safe,{attempted:0,reason:obj.reason});
