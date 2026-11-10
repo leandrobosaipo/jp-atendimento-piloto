@@ -20,6 +20,7 @@ import uuid
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1] / "channels"))
 from customer_identity import resolve
+from bridge import human_pause
 from customer_planner import PlannerReservation, ReservationError
 from customer_plan import HeldPlanner, PlanHeld
 from claimed_customer import ClaimClosed, dell_reader
@@ -162,6 +163,7 @@ class Intake:
                 state TEXT NOT NULL, reason TEXT, contact INTEGER, conversation INTEGER,
                 message INTEGER, workflow TEXT, execution TEXT)""")
             columns = {row[1] for row in db.execute("PRAGMA table_info(intakes)")}
+            db.execute("CREATE INDEX IF NOT EXISTS intake_human_by_contact ON intakes(contact,conversation) WHERE reason='human_ownership'")
             for name in ("workflow", "execution"):
                 if name not in columns:
                     db.execute(f"ALTER TABLE intakes ADD COLUMN {name} TEXT")
@@ -247,6 +249,14 @@ class Intake:
              (self.chat.account, self.chat.inbox, conv_id, contact_id), "conversation_scope_mismatch")
         return row
 
+    def release_human(self,contact,conversation,episode):
+        row=self._check_conversation(conversation,contact)
+        meta=row.get("meta") or {}
+        need(row.get("status")=="open" and isinstance(row.get("labels"),list),"human_state_unknown")
+        observed=bool(meta.get("assignee") or meta.get("team") or "jp-atendimento-humano" in row["labels"])
+        return human_pause(self.db_path,(self.chat.account,self.chat.inbox,contact,conversation),observed,
+                           release_episode=episode)
+
     def receive(self, body, *, claim_epoch=None, native_proof=None):
         """One authenticated n8n call; unknown outcomes remain held, never replayed."""
         need(isinstance(body, dict) and set(body) == {"raw_base64", "record_id", "workflow_id", "execution_id"},
@@ -301,6 +311,10 @@ class Intake:
             identity = json.dumps(decision, sort_keys=True, separators=(",", ":"))
             contact, source, conv = self._contact(address_hash, identity)
             owner = self._check_conversation(conv, contact)
+            scope=(self.chat.account,self.chat.inbox,contact,conv)
+            meta=owner.get("meta") or {}
+            human_pause(self.db_path,scope,bool(meta.get("assignee") or meta.get("team") or
+                        "jp-atendimento-humano" in (owner.get("labels") or [])),request_id)
             with self.db() as db:
                 db.execute("UPDATE intakes SET contact=?,conversation=?,state='posting' WHERE request=?",
                            (contact, conv, request_id))
@@ -315,7 +329,7 @@ class Intake:
             meta = owner.get("meta") or {}
             labels = owner.get("labels") or []
             human = bool(meta.get("assignee") or meta.get("team") or "jp-atendimento-humano" in labels)
-            if human:
+            if human_pause(self.db_path,scope,human,request_id):
                 reason = "human_ownership"
             elif decision["status"] == "identified":
                 reason = "customer_inactive" if decision["inactive"] else "opt_out" if decision["opt_out"] else None
@@ -521,5 +535,13 @@ def serve(config_path):
 
 
 if __name__ == "__main__":
-    need(len(sys.argv) == 2, "config_path_required")
-    serve(sys.argv[1])
+    if len(sys.argv)==6 and sys.argv[1]=="release-human":
+        need(os.geteuid()==0 and re.fullmatch(r"[0-9a-f]{32}",sys.argv[5]),"local_operator_required")
+        cfg=json.loads(pathlib.Path(sys.argv[2]).read_bytes())
+        chat=Chatwoot(cfg["account"],cfg["inbox"],cfg["channel"],pathlib.Path(cfg["chatwoot_token_file"]).read_text().strip())
+        intake=Intake(cfg["db_file"],cfg,chat,None,None)
+        need(intake.release_human(int(sys.argv[3]),int(sys.argv[4]),sys.argv[5]) is False,"release_unconfirmed")
+        print(json.dumps({"released":True,"replayed":0}))
+    else:
+        need(len(sys.argv) == 2, "config_path_required")
+        serve(sys.argv[1])

@@ -8,7 +8,7 @@ from contextlib import closing
 from pathlib import Path
 from uuid import UUID
 
-from bridge import digest, need
+from bridge import digest, intake_held, need
 from dispatch_contract import INSTANCE
 
 
@@ -73,6 +73,7 @@ class ResumePlan:
              "continuation_contact_changed")
 
         def human_free():
+            need(not intake_held(cfg["intakes"],identity[:4],intake["request"]),"human_ownership")
             conv=self.conversation(identity[3])
             meta=conv["meta"];sender=meta["sender"]
             need((conv["account_id"],conv["inbox_id"],sender["id"],conv["id"])==identity[:4] and

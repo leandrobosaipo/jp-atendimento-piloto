@@ -4,7 +4,7 @@ from datetime import datetime, timezone
 import re
 from uuid import UUID
 
-from bridge import digest, need
+from bridge import digest, intake_held, need
 from dispatch_contract import INSTANCE
 from resume import one, rows, sha
 
@@ -59,8 +59,9 @@ def prepare_first(cfg, request, read_record, conversation, image_bytes, now):
         meta = conv["meta"]
         need((conv["account_id"],conv["inbox_id"],meta["sender"]["id"],conv["id"]) == ids[:4] and
              meta["sender"]["identifier"] == "jp-intake-"+address, "first_chat_identity_changed")
-        need(conv["status"] == "open" and isinstance(conv["labels"],list) and not meta.get("assignee") and
-             not meta.get("team") and "jp-atendimento-humano" not in conv["labels"], "human_ownership")
+        need(conv["status"]=="open" and isinstance(conv["labels"],list),"human_ownership")
+        observed=bool(meta.get("assignee") or meta.get("team") or "jp-atendimento-humano" in conv["labels"])
+        need(not observed and not intake_held(cfg["intakes"],ids[:4],intake["request"]),"human_ownership")
 
     image = image_bytes(art["asset_id"], art["asset_sha256"])
     need(sha(image) == art["asset_sha256"] and image.startswith(b"\xff\xd8") and image.endswith(b"\xff\xd9"), "approved_art_changed")

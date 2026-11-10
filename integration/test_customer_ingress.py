@@ -48,7 +48,7 @@ class FakeChatwoot:
         contact, _ = self.conversations[conversation_id]
         return {"account_id": self.account, "inbox_id": self.inbox, "id": conversation_id,
                 "meta": {"sender": {"id": contact}, "assignee": {"id": 1} if self.assigned else None},
-                "labels": []}
+                "labels": [],"status":"open"}
 
     def incoming(self, source_id, conversation_id, text, request_id):
         self.incoming_calls += 1
@@ -131,6 +131,21 @@ class IngressTest(unittest.TestCase):
         self.assertEqual(self.chat.outgoing_calls, 0)
         self.assertEqual(self.planner.reserve({k: row[k] for k in
             ("request", "record", "account", "inbox", "contact", "conversation", "message", "state")})["status"], "held")
+
+    def test_unassignment_stays_human_until_exact_release_and_only_future_rows_resume(self):
+        from bridge import Held as GuardHeld, intake_held
+        self.chat.assigned=True
+        old=self.app.receive(self.event(KNOWN,"PAUSEBEFORE"))
+        self.chat.assigned=False
+        pending=self.app.receive(self.event(KNOWN,"PAUSEAFTER"))
+        self.assertEqual((old["reason"],pending["reason"]),("human_ownership","human_ownership"))
+        scope=(self.chat.account,self.chat.inbox,old["contact"],old["conversation"])
+        with self.app.db() as db:
+            episode,=db.execute("SELECT episode FROM intake_human_episodes WHERE release_cut IS NULL").fetchone()
+        with self.assertRaises(GuardHeld):self.app.release_human(*scope[2:],"wrong")
+        self.assertFalse(self.app.release_human(*scope[2:],episode))
+        self.assertTrue(intake_held(self.app.db_path,scope,pending["request"]))
+        self.assertEqual(self.app.receive(self.event(KNOWN,"PAUSEFUTURE"))["state"],"ready")
 
     def test_uncertain_post_is_held_without_retry(self):
         self.chat.fail_incoming = True

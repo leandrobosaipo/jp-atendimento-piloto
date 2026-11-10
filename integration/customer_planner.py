@@ -73,7 +73,10 @@ class PlannerReservation:
               (meta.get("sender") or {}).get("id")) ==
              (self.chat.account, self.chat.inbox, row["conversation"], row["contact"]),
              "reservation_conversation_mismatch")
-        if meta.get("assignee") or meta.get("team") or "jp-atendimento-humano" in (conv.get("labels") or []):
+        from bridge import human_pause
+        need(isinstance(conv.get("labels"),list),"human_state_unknown")
+        observed=bool(meta.get("assignee") or meta.get("team") or "jp-atendimento-humano" in conv["labels"])
+        if human_pause(self.intake_path,(self.chat.account,self.chat.inbox,row["contact"],row["conversation"]),observed,request):
             return {"status": "held", "request": request, "reason": "human_ownership"}
         matches = [m for m in self.chat.messages(row["conversation"]) if
                    m.get("id") == row["message"] and m.get("message_type") == 0 and

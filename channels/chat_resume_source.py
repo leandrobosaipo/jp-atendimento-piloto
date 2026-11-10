@@ -6,6 +6,7 @@ import socket
 import struct
 import urllib.request
 from personal import NoRedirect
+from bridge import human_pause
 
 
 def serve(listener, cfg):
@@ -35,6 +36,12 @@ def serve(listener, cfg):
                 result["meta"]={"sender":{"id":sender["id"],"identifier":sender["identifier"]},
                                 "assignee":True if meta.get("assignee") else None,
                                 "team":True if meta.get("team") else None}
+                if cfg.get("intakes"):
+                    scoped=(account,inbox,meta["sender"]["id"],cid)
+                    assert result["account_id"]==account and result["inbox_id"]==inbox and result["id"]==cid
+                    observed=bool(meta.get("assignee") or meta.get("team") or "jp-atendimento-humano" in result["labels"])
+                    if human_pause(cfg["intakes"],scoped,observed):
+                        result["labels"]=list(set(result["labels"])|{"jp-atendimento-humano"})
             except Exception:
                 result={"error":"conversation_unavailable"}
             try:conn.sendall((json.dumps(result)+"\n").encode())
