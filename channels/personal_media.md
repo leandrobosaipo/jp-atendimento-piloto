@@ -21,7 +21,9 @@ o `Native` de `personal.py` não permite essa rota e não foi ampliado aqui.
 consulta nativa. Grupo, outro contato, outra instância e eco não passam pelo
 escopo. O executor deve chamar `claim_and_advance` com diretório privado 0700:
 um arquivo 0600 criado com exclusividade e sincronizado em disco reserva a
-posição antes da tentativa. O claim permanece após aceite, entrega, falha ou
+posição e o SHA-256 da requisição nativa exata antes da tentativa. O mesmo hash
+é recalculado imediatamente antes do HTTP e incluído no aceite persistido. O
+claim permanece após aceite, entrega, falha ou
 resultado incerto. Uma nova tentativa da mesma posição fica bloqueada. O
 `Outbox` também passa `sending` para `accepted` somente com ID nativo; `PENDING`
 é aceite, não entrega. A próxima parte requer `confirm_part` da anterior.
@@ -34,6 +36,17 @@ SHA do JPEG; sem ela, o aceite continua bloqueado. O campo `authenticated` só
 pode ser atribuído por um chamador confiável depois de validar o registro do
 coletor, nunca copiado do webhook ou de um cliente. O código não lê diretamente
 o coletor e não usa recibo do Chatwoot como prova de WhatsApp.
+
+Se `findMessages` da Evolution não conservar mensagens novas, a sequência
+expõe `confirm_from_intent` para o mesmo ACK do coletor. Esse caminho exige o
+claim privado, o SHA da requisição que o transporte aceitou, o payload imutável
+do Outbox, mesmo ID e destino e o recibo autenticado. O recibo registra
+`content_basis=durable_intent_and_native_http_acceptance`, separado de
+`independent_native_readback`. O primeiro comprova os bytes que o remetente
+apresentou ao HTTP e a entrega técnica do ID; não comprova que o WhatsApp
+conservou os bytes do JPEG sem processamento nem que a imagem foi vista. O
+executor deve validar o envelope AEAD do ACK e o mapeamento PN↔LID antes de
+fornecer o testemunho. Falha ou resultado incerto não autoriza reenvio.
 
 ## Cliente nativo e sequência vinculada ao inbound
 

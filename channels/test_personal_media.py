@@ -181,7 +181,8 @@ class PersonalMediaTest(unittest.TestCase):
         with self.assertRaises(Held):
             self.advance(key)
         self.assertEqual(len(self.sent), 2)
-        self.assertEqual(self.box.parts(key)[2]["state"], "sending")
+        self.assertEqual(self.box.parts(key)[2]["state"], "pending")
+        self.assertEqual(len(list(self.claims.glob("*.claim"))), 2)
 
     def test_receipt_must_bind_position_native_id_mapping_and_native_content(self):
         key, _ = self.plan()

@@ -46,7 +46,7 @@ class FakeHTTP:
             return Response([{"number": PHONE[1:], "exists": True, "jid": self.jid}])
         if route == "chat/findMessages":
             native = body["where"]["key"]["id"]
-            return Response({"messages": {"records": [self.records[native]]}})
+            return Response({"messages": {"records": [self.records[native]] if native in self.records else []}})
         native = f"accepted-{len([r for r in self.requests if r[1].startswith('message/')]):02d}"
         key = {"id": native, "remoteJid": self.jid, "fromMe": True}
         if route == "message/sendText":
@@ -217,6 +217,40 @@ class NativeSequenceTest(unittest.TestCase):
         with self.assertRaises(Held):
             restarted.advance(key)
         self.assertEqual(len([r for r in self.http.requests if r[1].startswith("message/")]), 1)
+
+    def test_collector_ack_with_durable_intent_when_native_store_is_empty(self):
+        key, _ = self.sequence.start(self.inbound(), ["response"], image_group="servicos",
+                                     choose=lambda rows: rows[0])
+        self.assertEqual(self.sequence.advance(key)["status"], "accepted_not_delivered")
+        self.http.records.pop("accepted-01")  # Existing Evolution setting stores no new message.
+        with self.assertRaises(Held):
+            self.sequence.confirm(key, 1, self.witness("accepted-01", 1))
+        self.assertEqual(self.sequence.confirm_from_intent(key, 1, self.witness("accepted-01", 1))["status"],
+                         "delivered")
+        with self.box.db() as db:
+            receipt = json.loads(db.execute("SELECT receipt FROM channel_parts WHERE event_key=? AND position=1",
+                                            (key,)).fetchone()[0])
+        self.assertEqual(receipt["content_basis"], "durable_intent_and_native_http_acceptance")
+        self.assertEqual(self.sequence.advance(key)["position"], 2)
+
+    def test_intent_claim_and_accepted_request_must_match_before_ack(self):
+        key, _ = self.sequence.start(self.inbound(), ["response"])
+        self.sequence.advance(key)
+        claim = self.claims / f"{key}-1.claim"
+        before = claim.read_bytes()
+        changed = json.loads(before)
+        changed["request_sha256"] = "0" * 64
+        claim.write_text(json.dumps(changed))
+        with self.assertRaisesRegex(Held, "accepted_intent_mismatch"):
+            self.sequence.confirm_from_intent(key, 1, self.witness("accepted-01", 1))
+        claim.write_bytes(before)
+        with self.box.db() as db:
+            row = db.execute("SELECT receipt FROM channel_parts WHERE event_key=? AND position=1", (key,)).fetchone()
+            receipt = json.loads(row[0]);receipt["request_sha256"] = "0" * 64
+            db.execute("UPDATE channel_parts SET receipt=? WHERE event_key=? AND position=1",
+                       (json.dumps(receipt), key))
+        with self.assertRaisesRegex(Held, "accepted_intent_mismatch"):
+            self.sequence.confirm_from_intent(key, 1, self.witness("accepted-01", 1))
 
     def test_jpeg_ack_needs_full_media_readback_before_next_part(self):
         key, _ = self.sequence.start(self.inbound(), ["response"], image_group="servicos")

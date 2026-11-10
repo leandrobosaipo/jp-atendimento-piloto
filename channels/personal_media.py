@@ -13,7 +13,7 @@ import re
 import stat
 from datetime import datetime, timezone
 
-from bridge import Event, digest, need
+from bridge import Event, canonical, digest, need
 from personal import INSTANCE, Personal
 
 
@@ -69,6 +69,7 @@ class PersonalMedia:
         self.native = native
         self.collector_instance_id_hash = collector_instance_id_hash
         self.verified = False
+        self._claimed_request_sha256 = None
 
     @property
     def jid(self):
@@ -120,8 +121,8 @@ class PersonalMedia:
              "artwork_bytes_mismatch")
         return raw
 
-    def send(self, event, payload):
-        """Return native acceptance only; Outbox awaits a separate delivery proof."""
+    def request_intent(self, event, payload):
+        """Build and hash the exact allowlisted native request before a claim."""
         self._scope(event, payload)
         if payload.get("kind") == "text":
             text = payload.get("text")
@@ -136,6 +137,13 @@ class PersonalMedia:
                 "linkPreview": False}
         else:
             need(False, "unsupported_part")
+        raw = json.dumps(body, separators=(",", ":")).encode()
+        return route, body, hashlib.sha256(route.encode() + b"\0" + raw).hexdigest()
+
+    def send(self, event, payload):
+        """Return native acceptance only; Outbox awaits a separate delivery proof."""
+        route, body, intent_sha256 = self.request_intent(event, payload)
+        need(intent_sha256 == self._claimed_request_sha256, "unclaimed_native_request")
         result = self.native(route, body)
         key = result.get("key", {}) if isinstance(result, dict) else {}
         need(key.get("fromMe") is True and key.get("remoteJid") == self.jid and
@@ -143,7 +151,8 @@ class PersonalMedia:
              "native_acceptance_unproved")
         if hasattr(self.native, "bind_native_id"):
             self.native.bind_native_id(key["id"])
-        return {"id": key["id"], "destination": self.jid, "account": INSTANCE}
+        return {"id": key["id"], "destination": self.jid, "account": INSTANCE,
+                "request_sha256": intent_sha256}
 
     def _native_content(self, native_id, payload):
         saved = self.read_native(native_id)
@@ -159,7 +168,7 @@ class PersonalMedia:
                  hashlib.sha256(saved["bytes"]).hexdigest() == hashlib.sha256(raw).hexdigest(),
                  "native_media_mismatch")
 
-    def proof(self, event, native_id, payload, witness):
+    def proof(self, event, native_id, payload, witness, *, accepted_intent_sha256=None):
         """A trusted caller supplies an authenticated collector receipt and PN/LID readback."""
         self._scope(event, payload)
         need(isinstance(witness, dict) and witness.get("authenticated") is True and
@@ -179,26 +188,39 @@ class PersonalMedia:
              mapping.get("pn") == mapping.get("reverse_pn") == phone_hash and
              mapping.get("forward_lid") == mapping.get("reverse_lid") == lid,
              "collector_recipient_mismatch")
-        self._native_content(native_id, payload)
+        if accepted_intent_sha256 is None:
+            self._native_content(native_id, payload)
+            content_basis = "independent_native_readback"
+        else:
+            need(isinstance(accepted_intent_sha256, str) and HEX.fullmatch(accepted_intent_sha256) and
+                 self.request_intent(event, payload)[2] == accepted_intent_sha256,
+                 "accepted_intent_content_mismatch")
+            content_basis = "durable_intent_and_native_http_acceptance"
         return {"id": native_id, "account": INSTANCE, "destination": self.jid,
                 "payload_sha256": digest(payload), "status": "read" if receipt["status"] == "READ" else "delivered",
                 "source": "authenticated_mac_collector", "collector_record_id": receipt["record_id"],
-                "received_at": receipt["at"]}
+                "received_at": receipt["at"], "content_basis": content_basis}
 
-    def confirm_part(self, box, event_key, position, witness):
+    def confirm_part(self, box, event_key, position, witness, *, accepted_intent_sha256=None):
         need(type(position) is int and position > 0 and isinstance(witness, dict) and
              witness.get("position") == position,
              "part_position_required")
         record_id = (witness.get("receipt") or {}).get("record_id") if isinstance(witness.get("receipt"), dict) else None
         need(isinstance(record_id, str) and HEX.fullmatch(record_id), "collector_record_required")
         with box.db() as db:
+            accepted = db.execute("SELECT receipt FROM channel_parts WHERE event_key=? AND position=? AND state='accepted'",
+                                  (event_key, position)).fetchone()
+            if accepted_intent_sha256 is not None:
+                need(accepted and json.loads(accepted["receipt"]).get("request_sha256") == accepted_intent_sha256,
+                     "accepted_intent_not_bound")
             for row in db.execute("SELECT event_key,position,receipt FROM channel_parts WHERE state='delivered'"):
                 prior = json.loads(row["receipt"])
                 need(prior.get("collector_record_id") != record_id or
                      (row["event_key"], row["position"]) == (event_key, position),
                      "collector_record_reused")
         return box.confirm(event_key, position, lambda event, native, payload:
-                           self.proof(event, native, payload, witness))
+                           self.proof(event, native, payload, witness,
+                                      accepted_intent_sha256=accepted_intent_sha256))
 
 
 def claim_and_advance(box, event_key, transport, claims_dir):
@@ -215,6 +237,7 @@ def claim_and_advance(box, event_key, transport, claims_dir):
     if pending is None:
         return box.advance(event_key, transport)
     need(pending["state"] == "pending", "await_same_receipt_no_resend")
+    _, _, intent_sha256 = transport.request_intent(json.loads(row["event"]), json.loads(pending["payload"]))
     directory = Path(claims_dir).absolute()
     need(not any(p.is_symlink() for p in (directory, *directory.parents)), "unsafe_claim_directory")
     info = directory.stat()
@@ -224,7 +247,8 @@ def claim_and_advance(box, event_key, transport, claims_dir):
     file = directory / name
     fd = os.open(file, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
     try:
-        raw = json.dumps({"event_sha256": event_key, "position": pending["position"]}, separators=(",", ":")).encode()
+        raw = json.dumps({"event_sha256": event_key, "position": pending["position"],
+                          "request_sha256": intent_sha256}, separators=(",", ":")).encode()
         while raw:
             written = os.write(fd, raw)
             need(written > 0, "claim_write_failed")
@@ -237,7 +261,11 @@ def claim_and_advance(box, event_key, transport, claims_dir):
         os.fsync(dir_fd)
     finally:
         os.close(dir_fd)
-    return box.advance(event_key, transport)
+    transport._claimed_request_sha256 = intent_sha256
+    try:
+        return box.advance(event_key, transport)
+    finally:
+        transport._claimed_request_sha256 = None
 
 
 def _instant(value):
@@ -313,3 +341,30 @@ class PersonalSequence:
         if part["native_id"] and hasattr(self.transport.native, "bind_native_id"):
             self.transport.native.bind_native_id(json.loads(part["native_id"])[2])
         return self.transport.confirm_part(self.box, event_key, position, witness)
+
+    def confirm_from_intent(self, event_key, position, witness):
+        """Use a real collector ACK when the native store has no message readback.
+
+        This proves accepted request content and technical delivery by ID; it
+        does not claim a WhatsApp copy or that the image was viewed.
+        """
+        need(type(position) is int and position > 0, "part_position_required")
+        with self.box.db() as db:
+            bound = db.execute("SELECT 1 FROM personal_inbound WHERE event_key=?", (event_key,)).fetchone()
+            row = db.execute("SELECT payload,receipt,state FROM channel_parts WHERE event_key=? AND position=?",
+                             (event_key, position)).fetchone()
+            event = db.execute("SELECT event FROM channel_events WHERE event_key=?", (event_key,)).fetchone()
+        need(bound and row and event and row["state"] == "accepted", "accepted_personal_part_required")
+        claim = Path(self.claims_dir).absolute() / f"{event_key}-{position}.claim"
+        info = claim.lstat()
+        need(stat.S_ISREG(info.st_mode) and info.st_uid == os.geteuid() and info.st_nlink == 1 and
+             stat.S_IMODE(info.st_mode) == 0o600 and info.st_size <= 1024, "private_intent_claim_required")
+        saved = json.loads(claim.read_bytes())
+        need(set(saved) == {"event_sha256", "position", "request_sha256"} and
+             saved["event_sha256"] == event_key and saved["position"] == position and
+             saved["request_sha256"] == json.loads(row["receipt"]).get("request_sha256") and
+             saved["request_sha256"] == self.transport.request_intent(
+                 json.loads(event["event"]), json.loads(row["payload"]))[2],
+             "accepted_intent_mismatch")
+        return self.transport.confirm_part(self.box, event_key, position, witness,
+                                           accepted_intent_sha256=saved["request_sha256"])
