@@ -34,6 +34,13 @@ def run(api,root,role,action,expected_version,apply):
         save('.intent',record)
         if action in ('stage','restore'):
             target=desired if action=='stage' else before
+            # n8n merges settings on PATCH. Null clears them on an unpublished
+            # draft so that the following write can restore absent keys too.
+            if action=='restore' and set(current.get('settings') or {})-set(target['settings']):
+                api.req('PATCH','/rest/workflows/'+wid,{'versionId':expected_version,'settings':None})
+                cleared=get()
+                if cleared['active'] or cleared.get('activeVersionId') or cleared.get('settings'):raise ValueError('reconcile_unpublished_settings')
+                expected_version=cleared['versionId']
             api.req('PATCH','/rest/workflows/'+wid,{**target,'versionId':expected_version})
         elif action=='arm':
             api.req('POST','/rest/workflows/'+wid+'/activate',{'versionId':expected_version});target=desired
@@ -42,6 +49,7 @@ def run(api,root,role,action,expected_version,apply):
         else:raise ValueError('unknown_action')
         after=get()
         if bool(after['active'])!=(action=='arm') or not subset(spec(after),target):raise ValueError('reconcile_native_state')
+        if action=='restore' and spec(after)!=before:raise ValueError('baseline_not_restored')
         record.update(applied=True,version=after['versionId'],active=after['active']);save('.done',record);prior.unlink();return record
 if __name__=='__main__':
     import sys
