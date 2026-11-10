@@ -186,6 +186,10 @@ class IngressTest(unittest.TestCase):
                                    "remoteJidAlt": NEW}}, INSTANCE, proof)
         with self.assertRaises(Held):
             native_sender({"key": {"fromMe": False, "remoteJid": "123@g.us"}}, INSTANCE, proof)
+        for extra in ({"remoteJid": NEW}, {"remoteJid": "123@g.us"}, {"participant": KNOWN},
+                      {"participantAlt": lid}):
+            with self.assertRaises(Held):
+                native_sender({"key":{"fromMe":False,"remoteJid":KNOWN},**extra}, INSTANCE, proof)
 
     def test_claimed_collector_handoff_keeps_execution_and_never_sends(self):
         lid = "100000001@lid"

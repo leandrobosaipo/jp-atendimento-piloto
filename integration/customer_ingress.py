@@ -11,6 +11,7 @@ import pathlib
 import re
 import socket
 import sqlite3
+import ssl
 import struct
 import sys
 import urllib.parse
@@ -60,9 +61,10 @@ def native_sender(data, instance, bindings, instance_id_hash=None, epoch=None, r
     need(isinstance(forward, dict) and isinstance(reverse, dict), "native_mapping_missing")
     key = data["key"]
     need(key.get("fromMe") is False and not key.get("participant") and
-         not key.get("participantAlt"), "native_sender_unverified")
+         not key.get("participantAlt") and not data.get("participant") and
+         not data.get("participantAlt"), "native_sender_unverified")
     addresses = [v for v in (key.get("remoteJid"), key.get("remoteJidAlt"),
-                              data.get("remoteJidAlt")) if v is not None]
+                              data.get("remoteJidAlt"), data.get("remoteJid")) if v is not None]
     need(addresses and all(isinstance(v, str) and (PN.fullmatch(v) or LID.fullmatch(v))
                            for v in addresses), "native_sender_unverified")
     unique = set(addresses)
@@ -194,10 +196,10 @@ class Intake:
                 **{k: row[k] for k in ("request", "record", "state", "reason", "contact", "conversation", "message",
                                        "workflow", "execution")}}
 
-    def channel_sender(self, data, record):
+    def channel_sender(self, data, record, proof=None):
         cfg = self.cfg
         key = data["key"]
-        addresses = (key.get("remoteJid"), key.get("remoteJidAlt"), data.get("remoteJidAlt"))
+        addresses = (key.get("remoteJid"), key.get("remoteJidAlt"), data.get("remoteJidAlt"), data.get("remoteJid"))
         if self.claimed is not None:
             instance_id = data.get("instanceId")
             need(isinstance(instance_id, str) and instance_id and
@@ -205,7 +207,7 @@ class Intake:
         if self.claimed is not None and all(a is None or isinstance(a,str) and PN.fullmatch(a) for a in addresses):
             proof = {"instance":cfg["instance"], "instance_id_hash":cfg["native_instance_id_hash"],
                      "epoch":cfg["channel_epoch"], "record_id":record, "paused":False, "forward":{}, "reverse":{}}
-        else:
+        elif proof is None:
             proof = self.bindings()
         return native_sender(data, cfg["instance"], proof, cfg["native_instance_id_hash"],
                              cfg["channel_epoch"], record)
@@ -245,7 +247,7 @@ class Intake:
              (self.chat.account, self.chat.inbox, conv_id, contact_id), "conversation_scope_mismatch")
         return row
 
-    def receive(self, body, *, claim_epoch=None):
+    def receive(self, body, *, claim_epoch=None, native_proof=None):
         """One authenticated n8n call; unknown outcomes remain held, never replayed."""
         need(isinstance(body, dict) and set(body) == {"raw_base64", "record_id", "workflow_id", "execution_id"},
              "invalid_intake")
@@ -267,7 +269,7 @@ class Intake:
         channel = body["workflow_id"] == self.cfg.get("channel_workflow")
         need((channel and claim_epoch is not None and claim_epoch == self.cfg["channel_epoch"])
              or (not channel and claim_epoch is None and self.claimed is None), "channel_claim_required")
-        sender = (self.channel_sender(data, body["record_id"]) if channel else
+        sender = (self.channel_sender(data, body["record_id"], native_proof) if channel else
                   native_sender(data, self.cfg["instance"], self.bindings()))
         message = data.get("message") or {}
         text = message.get("conversation") or (message.get("extendedTextMessage") or {}).get("text")
@@ -362,18 +364,26 @@ def process_channel(raw, record, workflow, execution, epoch, cfg, app, planner, 
         need(record in cfg.get("channel_fixture_records", []), "channel_fixture_scope")
     if app.claimed is not None:
         app.claimed.check(record, workflow, execution, epoch)
+    proof=None
     try:
         envelope = json.loads(raw)
         need(envelope.get("instance") == cfg["instance"] and
              str(envelope.get("event", "")).lower().replace("_", ".") == "messages.upsert",
              "channel_event_invalid")
-        sender=app.channel_sender(envelope["data"], record)
-    except (Held, ValueError, KeyError, TypeError):
+        data=envelope["data"]
+        key=data["key"]
+        addresses=(key.get("remoteJid"),key.get("remoteJidAlt"),data.get("remoteJid"),data.get("remoteJidAlt"))
+        if cfg.get("native_pair_reader") and any(isinstance(a,str) and LID.fullmatch(a) for a in addresses):
+            need(app.claimed is not None,"claim_required")
+            proof=read_claimed_pair(cfg["native_pair_reader"],raw,record,epoch)
+            app.claimed.check(record,workflow,execution,epoch)
+        sender=app.channel_sender(data, record, proof)
+    except (Held, ValueError, KeyError, TypeError, OSError, http.client.HTTPException):
         # The encrypted collector record remains the durable review source.
         return {"ok": True, "record_id": record, "workflow": workflow,
                 "execution": execution, "status": "retained", "reason": "native_identity_unverified"}
     intake = app.receive({"raw_base64": base64.b64encode(raw).decode(), "record_id": record,
-                          "workflow_id": workflow, "execution_id": execution}, claim_epoch=epoch)
+                          "workflow_id": workflow, "execution_id": execution}, claim_epoch=epoch,native_proof=proof)
     if app.claimed is not None:
         app.claimed.check(record, workflow, execution, epoch)
     submitted = {k: intake[k] for k in
@@ -401,6 +411,27 @@ def process_channel(raw, record, workflow, execution, epoch, cfg, app, planner, 
         result["first_part"]=receipt["status"]
         if receipt["status"]=="accepted":result["status"]="processed"
     return result
+
+
+def read_claimed_pair(cfg, raw, record, epoch):
+    # Direct LAN mutual TLS. No proxy, redirects, credentials for Evolution, or selectable URL.
+    import ipaddress
+    host = str(ipaddress.IPv4Address(cfg["host"]))
+    need(ipaddress.ip_address(host).is_private and type(cfg["port"]) is int and
+         1024 <= cfg["port"] <= 65535, "invalid_native_reader")
+    tls = ssl.create_default_context(cafile=cfg["server_ca"])
+    tls.minimum_version = ssl.TLSVersion.TLSv1_3
+    tls.load_cert_chain(cfg["client_cert"], cfg["client_key"])
+    connection = http.client.HTTPSConnection(host, cfg["port"], timeout=4, context=tls)
+    try:
+        connection.request("POST", "/v1/claimed-pair", body=raw, headers={
+            "Content-Type": "application/octet-stream", "X-Record-Id":record, "X-Owner-Epoch":epoch})
+        response=connection.getresponse()
+        result=response.read(4097)
+        need(response.status==200 and len(result)<=4096,"native_reader_unavailable")
+        return json.loads(result)
+    finally:
+        connection.close()
 
 
 def serve(config_path):
