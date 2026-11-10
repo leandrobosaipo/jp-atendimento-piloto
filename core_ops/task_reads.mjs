@@ -29,16 +29,17 @@ export function checkTask(task,state){
   requireBinding(/^\+55[1-9]\d{9,10}$/.test(task.destination_e164)&&(task.client_code==null||/^\d{1,14}$/.test(task.client_code)));
   return {task:task.task_id,source:task.source_sha256,phone:task.destination_e164.slice(1),client:task.client_code==null?null:String(task.client_code)};
 }
-function admission(){
+export function admitted(roleName,stages){
   const c=request.getStore();requireBinding(c?.active&&/^\d{1,20}$/.test(c.execution)&&/^[\w-]{1,100}$/.test(c.node));
-  const role=read("/ops-config/manifest.json").reply,owner=read("/ops-state/ownership.json");
+  const role=read("/ops-config/manifest.json")[roleName],owner=read("/ops-state/ownership.json");
   const stage=c.route.split("/").at(-1);
-  requireBinding(c.workflow===role.workflow&&role.nodes[c.node]===c.route&&["reply-next","reply-plan","reply-execute"].includes(stage));
-  requireBinding(["rehearsal","owned"].includes(owner.mode)&&owner.roles.includes("reply")&&owner.epoch===c.epoch&&Date.now()<Date.parse(owner.until));
+  requireBinding(c.workflow===role.workflow&&role.nodes[c.node]===c.route&&stages.includes(stage));
+  requireBinding(["rehearsal","owned"].includes(owner.mode)&&owner.roles.includes(roleName)&&owner.epoch===c.epoch&&Date.now()<Date.parse(owner.until));
   const prefix="/ops-state/admissions/"+c.workflow+"-"+c.execution+"-"+c.node,mark=read(prefix+".intent");
   requireBinding(!fs.existsSync(prefix+".done")&&["workflow","execution","node","epoch"].every(k=>c[k]===mark[k])&&mark.stage===stage);
-  return {workflow:c.workflow,node:c.node,execution:c.execution,epoch:c.epoch,role:"reply",stage};
+  return {workflow:c.workflow,node:c.node,execution:c.execution,epoch:c.epoch,role:roleName,stage};
 }
+const admission=()=>admitted("reply",["reply-next","reply-plan","reply-execute"]);
 export function withTask(task,load,fn){
   admission();checkTask(task,load());
   return customer.run(()=>checkTask(task,load()),fn);

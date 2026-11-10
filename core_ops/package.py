@@ -19,12 +19,26 @@ def wrap_native(native,expected):
     if hashlib.sha256(native).hexdigest()!=expected:raise ValueError('frozen_native_drift')
     original=b'http.createServer(async (req, res) => {'
     if native.count(original)!=1:raise ValueError('native_listener_drift')
-    return b'import {taskServer as scopedServer} from "/ops-app/task_reads.mjs";\n'+native.replace(original,b'scopedServer(async (req, res) => {')
+    result=b'import {taskServer as scopedServer} from "/ops-app/task_reads.mjs";\n'+native.replace(original,b'scopedServer(async (req, res) => {')
+    if b'async function contactOperation(operation,row)' in result:
+        edits={
+            b'async function contactOperation(operation,row){':b'function contactOperation(operation,row){return contactScope(operation,row,load,()=>nativeContactOperation(operation,row));}\nasync function nativeContactOperation(operation,row){',
+            b'const target={baseUrl:cfg.adapter_url,scopedCredential:cfg.adapter_token,instance,phone:row.destination_e164}':b'const target={baseUrl:"http://task-contact.invalid",scopedCredential:"isolated-unix-peer-credential",instance,phone:row.destination_e164,fetchImpl:effectFetch(fetch)}',
+            b'source:row=>readOfficialContactSource(agendaConfig(),row.client_code)':b'source:row=>contactSource(row,load)',
+            b'writeEnabled:n8nStageAgendaWriteEnabled});':b'writeEnabled:process.env.JP_REPLY_SCOPED_WRITE_ENABLED==="1"});',
+        }
+        for old,new in edits.items():
+            if result.count(old)!=1:raise ValueError('native_contact_contract_changed')
+            result=result.replace(old,new)
+        result=b'import {contactScope,contactSource,effectFetch} from "/ops-app/effect_client.mjs";\n'+result
+    return result
 
 def wrap_reply(native,expected):
     if hashlib.sha256(native).hexdigest()!=expected:raise ValueError('frozen_reply_drift')
     replacements={
-        'fetchImpl=deps.fetchImpl||fetch;':'fetchImpl=scopedFetch(deps.fetchImpl||fetch);',
+        'fetchImpl=deps.fetchImpl||fetch;':'fetchImpl=effectFetch(scopedFetch(deps.fetchImpl||fetch));',
+        'return createReplyAutomation({...deps,readContext,slots,send,':'const engine=createReplyAutomation({...deps,readContext,slots,send,',
+        ' });\n}':' });\n return wrapEngine(engine,deps.load);\n}',
         'async function readContext(t){':'function readContext(t){return withTask(t,deps.load,()=>readCustomer(t));}\n async function readCustomer(t){',
         'await readReplyClients(deps.agendaConfig,{fetchImpl})':'await readTaskClients(native)',
         "async function slots(t,{dates,period='any',context,selection}={}){":"function slots(t,opts){return withTask(t,deps.load,()=>readSlots(t,opts));}\n async function readSlots(t,{dates,period='any',context,selection}={}){",
@@ -32,7 +46,7 @@ def wrap_reply(native,expected):
     for old,new in replacements.items():
         if native.count(old.encode())!=1:raise ValueError('reply_adapter_drift')
         native=native.replace(old.encode(),new.encode())
-    return b'import {withTask,scopedFetch,readTaskClients} from "/ops-app/task_reads.mjs";\n'+native
+    return b'import {effectFetch,wrapEngine} from "/ops-app/effect_client.mjs";\nimport {withTask,scopedFetch,readTaskClients} from "/ops-app/task_reads.mjs";\n'+native
 
 if __name__=='__main__':
     p=argparse.ArgumentParser();p.add_argument('inputs',type=Path);p.add_argument('dest',type=Path);p.add_argument('--apply',action='store_true');a=p.parse_args()
