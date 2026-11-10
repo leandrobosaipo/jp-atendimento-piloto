@@ -166,9 +166,10 @@ def execute(args):
     # Hashes stay private; output never contains the session or source response.
     protected = {p: p.read_bytes() for p in (ETC / "assets.json", ETC / "runtime.json", ai, unit)}
     states = {u: run("systemctl", "is-active", u) for u in ("atendimento-piloto-ai.socket", "atendimento-piloto-ai.service")}
-    pre = database_audit(STATE, allow_human_holds=True)
+    frozen = getattr(args,"retained_db_sha256",None)
+    pre = database_audit(STATE, allow_human_holds=True, retained_db_sha256=frozen)
     def invariant():
-        need(database_audit(STATE, allow_human_holds=True) == pre, "integration_state_changed")
+        need(database_audit(STATE, allow_human_holds=True, retained_db_sha256=frozen) == pre, "integration_state_changed")
         need(all(p.read_bytes() == value for p, value in protected.items()), "protected_files_changed")
         need(all(run("systemctl", "is-active", u) == value for u, value in states.items()), "panel_state_changed")
     def check(expected):
@@ -198,6 +199,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     for name in ("source-commit", "integration-commit", "panel-commit", "machine-id", "candidate", "backup", "expected-old-sha256", "expected-new-sha256"):
         parser.add_argument("--" + name, required=True)
+    parser.add_argument("--retained-db-sha256")
     parser.add_argument("--apply", action="store_true")
     args = parser.parse_args()
     try:
