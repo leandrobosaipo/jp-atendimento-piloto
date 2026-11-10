@@ -25,6 +25,7 @@ class Parts(unittest.TestCase):
                     db.execute("INSERT INTO events(req,actor,question,options,state) VALUES(?,?,'text','{}','incoming')",(rid,actor))
                 return app.row(rid)
             first=event("A")
+            pending_before_take=event("A")
             self.assertTrue(app.hold_event(first))
             self.assertFalse(app.hold_event(event("B")))
             command={"op":"human-release","actor":"A","contact":12,"conversation":2,"episode":app.ownership("A")["episode"]}
@@ -34,6 +35,8 @@ class Parts(unittest.TestCase):
             for changes,uid in [({},1000),({"conversation":3},0),({"actor":"B","conversation":3,"contact":13},0),({"episode":str(uuid.uuid4())},0)]:
                 with self.assertRaises(Stop):app.operator_ownership({**command,**changes},uid)
             self.assertEqual(app.operator_ownership(command,0)["pending_replayed"],0)
+            self.assertTrue(app.hold_event(pending_before_take))
+            self.assertFalse(app.hold_event(event("B")))
             self.assertFalse(app.hold_event(event("A")))
             self.assertEqual(app.row(first["req"])["state"],"human")
             self.assertIsNotNone(app.operator_ownership({**command,"op":"human-take"},0))

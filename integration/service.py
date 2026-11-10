@@ -64,7 +64,9 @@ class App:
             conn.execute("""CREATE TABLE IF NOT EXISTS human_ownership (
                 episode TEXT PRIMARY KEY, account INTEGER NOT NULL, inbox INTEGER NOT NULL,
                 conversation INTEGER NOT NULL, contact INTEGER NOT NULL, reason TEXT NOT NULL,
-                opened TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, released TEXT)""")
+                opened TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, released TEXT, release_cut INTEGER)""")
+            if "release_cut" not in {r[1] for r in conn.execute("PRAGMA table_info(human_ownership)")}:
+                conn.execute("ALTER TABLE human_ownership ADD COLUMN release_cut INTEGER")
             conn.execute("""CREATE UNIQUE INDEX IF NOT EXISTS human_current ON human_ownership(account,inbox,conversation) WHERE released IS NULL""")
         self.send_locks={actor:threading.Lock() for actor in settings["actors"]}
     @contextmanager
@@ -116,12 +118,18 @@ class App:
     def hold_event(self,row):
         actor=row["actor"]
         hold=self.ownership(actor)
-        if not hold:
+        # A takeover may have opened and closed while a request was being planned.
+        with self.db() as db:
+            old=db.execute("""SELECT 1 FROM human_ownership h JOIN events e ON e.req=?
+                WHERE h.account=? AND h.inbox=? AND h.conversation=? AND h.contact=?
+                AND h.released IS NOT NULL AND e.rowid<=h.release_cut LIMIT 1""",
+                (row["req"],*self.owner_key(actor))).fetchone()
+        if not hold and not old:
             reason=self.native_owner(actor)
             if reason:hold=self.ownership(actor,reason)
-        if hold:
+        if hold or old:
             self.advance(row["req"],row["state"],"human",reason="human_ownership")
-        return bool(hold)
+        return bool(hold or old)
     def operator_ownership(self,msg,peer_uid):
         need(peer_uid==0,"denied")
         actor=msg.get("actor")
@@ -134,7 +142,8 @@ class App:
                 return self.ownership(actor,native or "operator")
             need(msg["op"]=="human-release" and not native,"human_still_assigned")
             with self.db() as db:
-                changed=db.execute("""UPDATE human_ownership SET released=CURRENT_TIMESTAMP WHERE
+                changed=db.execute("""UPDATE human_ownership SET released=CURRENT_TIMESTAMP,
+                    release_cut=(SELECT COALESCE(MAX(rowid),0) FROM events) WHERE
                     episode=? AND account=? AND inbox=? AND conversation=? AND contact=? AND released IS NULL""",
                     (msg.get("episode"),*key)).rowcount
             need(changed==1,"wrong_ownership_episode")
