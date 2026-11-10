@@ -14,6 +14,7 @@ from bridge import Held, Outbox, digest
 from dispatch import Dispatcher
 from dispatch_contract import INSTANCE
 from dispatch_service import Handler, Policy, Server, clear_stale_socket
+from dispatch_service import observe_records
 
 
 class DeliveryTests(unittest.TestCase):
@@ -123,6 +124,52 @@ class DeliveryTests(unittest.TestCase):
             self.sender.deliver(changed,self.roles)
         self.assertEqual(self.sender.deliver(media,self.roles)[0],201)
         self.assertEqual(len(self.calls),2)
+
+    def test_sealed_receipt_for_actual_content_and_recipient(self):
+        from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+        import datetime
+        import struct
+        from dispatch_receipt import sha
+        uid=os.getuid()
+        secret=os.urandom(32)
+        for sub in ("access","data/records"):
+            (self.path/sub).mkdir(parents=True)
+        def store(name,raw):
+            path=self.path/name
+            path.write_bytes(raw)
+            path.chmod(0o600)
+        store("access/key",secret)
+        store("receipt-scope.json",json.dumps({"instance":INSTANCE,"instance_hash":sha(b"fixture")}).encode())
+        def seal(kind,row):
+            raw=json.dumps(dict(instance=INSTANCE,event=kind,data=row)).encode()
+            ins=INSTANCE.encode()
+            ident=sha(struct.pack(">I",len(ins))+ins+raw)
+            meta=dict(version=1,instance=INSTANCE,source="evolution",workflowId=None,executionId=None,
+                      receivedAt=datetime.datetime.fromtimestamp(self.now+1,datetime.timezone.utc).isoformat(),rawSha256=sha(raw))
+            iv=os.urandom(12)
+            enc=AESGCM(secret).encrypt(iv,raw,json.dumps(meta,separators=(",",":")).encode())
+            b64=lambda b:base64.b64encode(b).decode()
+            store("data/records/"+ident+".json",json.dumps(dict(version=1,meta=meta,iv=b64(iv),tag=b64(enc[-16:]),ciphertext=b64(enc[:-16]))).encode())
+            return ident
+        self.sender.deliver(self.body(),self.roles)
+        key=dict(id="native-1",fromMe=True,remoteJid=self.jid)
+        ack=dict(keyId="native-1",fromMe=True,remoteJid=self.jid,instanceId="fixture",status="DELIVERY_ACK")
+        def check(text="Fixture",**updates):
+            echo=seal("messages.upsert",dict(key=key,message={"conversation":text}))
+            receipt=seal("messages.update",{**ack,**updates})
+            return observe_records(self.sender,dict(native="native-1",echo=echo,record=receipt),
+                                   config=self.path,intake=self.path,admin_uid=uid,receiver_uid=uid)
+        for args in ({"status":"SERVER_ACK"},{"remoteJid":"10000000001@s.whatsapp.net"},{"fromMe":False},
+                     {"instanceId":"another"},{"text":"Changed"}):
+            with self.assertRaises(Held):
+                check(**args)
+        with self.assertRaises(Held):
+            self.sender.deliver(self.body(True),self.roles)
+        self.assertEqual(check(),{"status":"delivered"})
+        self.assertEqual(check(),{"status":"delivered"})
+        self.assertEqual(self.sender.deliver(self.body(True),self.roles)[0],201)
+        with self.box.db() as db:
+            self.assertEqual(db.execute("SELECT count(*) FROM dispatch_receipts").fetchone()[0],1)
 
     def test_source_budget_and_fence(self):
         self.sender.fence.rotate((self.epoch,1),None)

@@ -16,6 +16,7 @@ from uuid import UUID
 from bridge import Held, Outbox, canonical, digest, need
 from dispatch import Dispatcher
 from dispatch_contract import INSTANCE
+from dispatch_receipt import evidence, open_record
 from personal import NoRedirect, ORIGIN
 
 CONFIG = Path("/etc/jp-dispatch")
@@ -26,7 +27,7 @@ CORE_UID = 64681
 MAX_REQUEST = 25 * 1024 * 1024
 
 
-def read_private(path, uid, *, mode=0o600, gid=None):
+def private_bytes(path, uid, *, mode=0o600, gid=None, limit=65536):
     """Walk directory FDs without following symlinks, including parent components."""
     directory = os.open("/", os.O_RDONLY | os.O_DIRECTORY)
     try:
@@ -39,12 +40,35 @@ def read_private(path, uid, *, mode=0o600, gid=None):
             info = os.fstat(fd)
             need(stat.S_ISREG(info.st_mode) and info.st_uid == uid and info.st_nlink == 1 and
                  stat.S_IMODE(info.st_mode) == mode and (gid is None or info.st_gid == gid), "unsafe_proof_file")
-            data = stream.read(65537)
-            need(len(data) <= 65536, "proof_too_large")
-            return json.loads(data)
+            need(info.st_size<=limit, "proof_too_large")
+            data = stream.read(limit+1)
+            need(len(data) == info.st_size, "proof_size_changed")
+            return data
     finally:
         os.close(directory)
 
+def read_private(path, uid, **options):
+    return json.loads(private_bytes(path,uid,**options))
+
+
+def observe_records(dispatcher, body, *, config=CONFIG, intake=Path("/var/lib/jp-migracao-revisao/entrada-operacional"),
+                    admin_uid=0, receiver_uid=65534):
+    need(isinstance(body,dict) and set(body)=={"native","echo","record"} and isinstance(body["native"],str) and
+         re.fullmatch(r"[A-Za-z0-9_-]{6,160}",body["native"]) and all(isinstance(body[k],str) and
+         re.fullmatch(r"[a-f0-9]{64}",body[k]) for k in ("echo","record")) and body["record"]!=body["echo"], "invalid_receipt_ids")
+    def verify(attempt):
+        scope=read_private(config/"receipt-scope.json",admin_uid)
+        need(scope["instance"]==INSTANCE and re.fullmatch(r"[a-f0-9]{64}",scope["instance_hash"]),"receipt_scope")
+        key=private_bytes(intake/"access/key",receiver_uid,limit=32)
+        def record(identifier):
+            raw=private_bytes(intake/"data/records"/(identifier+".json"),receiver_uid,limit=32*1024*1024)
+            return open_record(identifier,json.loads(raw),key)
+        pair=config/"receipt-mappings"/(hashlib.sha256(attempt["attempt"].encode()).hexdigest()+".json")
+        try:mapping=read_private(pair,admin_uid)
+        except FileNotFoundError:mapping=None
+        return {**evidence(attempt,attempt["content_hash"],record(body["echo"]),record(body["record"]),scope["instance_hash"],mapping),
+                "echo":body["echo"],"record":body["record"]}
+    return {"status":dispatcher.observe(body["native"],verify)}
 
 class Policy:
     def __init__(self, config=CONFIG, ops=OPS, admin_uid=0, core_uid=CORE_UID, core_gid=CORE_UID):
@@ -121,7 +145,7 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_POST(self):
         try:
-            need(self.path == "/deliver", "unknown_path")
+            need(self.path in ("/deliver","/receipt"), "unknown_path")
             peer = self.connection.getsockopt(socket.SOL_SOCKET, socket.SO_PEERCRED, struct.calcsize("3i"))
             roles = self.server.policy.roles(struct.unpack("3i", peer)[1])
             lengths = self.headers.get_all("Content-Length", [])
@@ -129,11 +153,14 @@ class Handler(BaseHTTPRequestHandler):
                  not self.headers.get_all("Transfer-Encoding") and self.headers.get_content_type() == "application/json",
                  "invalid_request")
             length = int(lengths[0])
-            need(length <= MAX_REQUEST, "request_too_large")
+            need(length <= (1024 if self.path=="/receipt" else MAX_REQUEST), "request_too_large")
             self.connection.settimeout(10)
             raw = self.rfile.read(length)
             need(len(raw) == length, "truncated_request")
-            status, result = self.server.dispatcher.deliver(json.loads(raw), roles)
+            if self.path=="/receipt":
+                status,result=200,observe_records(self.server.dispatcher,json.loads(raw))
+            else:
+                status, result = self.server.dispatcher.deliver(json.loads(raw), roles)
         except (Held, ValueError, KeyError, OSError, TypeError, AttributeError):
             status, result = 409, {"status":"held"}
         self.send_response(status)

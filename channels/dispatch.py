@@ -7,6 +7,7 @@ from zoneinfo import ZoneInfo
 
 from bridge import canonical, digest, need
 from dispatch_contract import INSTANCE, accepted_response, recipient_binding, validate_request
+from dispatch_receipt import submitted_content
 from evolution import Fence
 
 
@@ -27,6 +28,9 @@ class Dispatcher:
                     native TEXT UNIQUE, UNIQUE(source,body_hash));
                 CREATE INDEX IF NOT EXISTS dispatch_usage ON dispatch_attempts(attempted);
                 CREATE INDEX IF NOT EXISTS dispatch_pending ON dispatch_attempts(destination,state);
+                CREATE TABLE IF NOT EXISTS dispatch_content (attempt TEXT PRIMARY KEY, content_hash TEXT NOT NULL);
+                CREATE TABLE IF NOT EXISTS dispatch_receipts (record TEXT PRIMARY KEY, echo TEXT NOT NULL,
+                    attempt TEXT NOT NULL, state TEXT NOT NULL);
                 CREATE TABLE IF NOT EXISTS dispatch_baseline (
                     id TEXT PRIMARY KEY, attempted INTEGER NOT NULL, weight INTEGER NOT NULL CHECK(weight>0));
                 CREATE INDEX IF NOT EXISTS dispatch_baseline_usage ON dispatch_baseline(attempted);
@@ -106,6 +110,7 @@ class Dispatcher:
                 need(self.authorize(body,owner,now)==grant and grant["until"]>now,"dispatch_proof_changed")
                 self.check_budget(db,now,grant)
                 db.execute("INSERT INTO dispatch_attempts VALUES(?,?,?,?,?,?,?,'sending',NULL)",(attempt,source,role,body_hash,jid,owner,now))
+                db.execute("INSERT INTO dispatch_content VALUES(?,?)",(attempt,submitted_content(payload)))
             try:
                 native_payload={**payload,"number":jid.split("@")[0]}
                 reply=accepted_response(self.transport(body["native_path"],native_payload),jid,submitted)
@@ -122,10 +127,15 @@ class Dispatcher:
         with self.fence.lock(),self.box.db() as db:
             row=db.execute("SELECT * FROM dispatch_attempts WHERE native=?",(native,)).fetchone()
             need(row and row["state"] in ("accepted","delivered","read"),"unbound_native_receipt")
-            proof=verify(dict(row))
+            content=db.execute("SELECT content_hash FROM dispatch_content WHERE attempt=?",(row["attempt"],)).fetchone()
+            proof=verify({**dict(row),"content_hash":content[0] if content else None})
             need(proof.get("instance")==INSTANCE and proof.get("native")==native and proof.get("fromMe") is True and
                  proof.get("destination")==row["destination"] and proof.get("payload_sha256")==row["body_hash"] and
                  proof.get("state") in ("delivered","read"),"unverified_delivery")
             state="read" if "read" in (row["state"],proof["state"]) else "delivered"
+            if "record" in proof:
+                db.execute("INSERT OR IGNORE INTO dispatch_receipts VALUES(?,?,?,?)",(proof["record"],proof["echo"],row["attempt"],proof["state"]))
+                prior=db.execute("SELECT echo,attempt,state FROM dispatch_receipts WHERE record=?",(proof["record"],)).fetchone()
+                need(tuple(prior)==(proof["echo"],row["attempt"],proof["state"]),"receipt_record_conflict")
             db.execute("UPDATE dispatch_attempts SET state=? WHERE attempt=?",(state,row["attempt"]))
             return state
