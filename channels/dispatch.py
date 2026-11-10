@@ -2,6 +2,7 @@
 import base64
 import datetime as dt
 import hashlib
+import re
 import time
 from zoneinfo import ZoneInfo
 
@@ -29,6 +30,9 @@ class Dispatcher:
                 CREATE INDEX IF NOT EXISTS dispatch_usage ON dispatch_attempts(attempted);
                 CREATE INDEX IF NOT EXISTS dispatch_pending ON dispatch_attempts(destination,state);
                 CREATE TABLE IF NOT EXISTS dispatch_content (attempt TEXT PRIMARY KEY, content_hash TEXT NOT NULL);
+                CREATE TABLE IF NOT EXISTS dispatch_next_grants (
+                    first TEXT PRIMARY KEY, next TEXT UNIQUE NOT NULL, payload_hash TEXT NOT NULL, until INTEGER NOT NULL);
+                CREATE TABLE IF NOT EXISTS dispatch_resume_holds (next TEXT PRIMARY KEY, reason TEXT NOT NULL);
                 CREATE TABLE IF NOT EXISTS dispatch_observations (
                     attempt TEXT NOT NULL, kind TEXT NOT NULL CHECK(kind IN ('echo','delivered','read')),
                     record TEXT NOT NULL, PRIMARY KEY(attempt,kind));
@@ -73,8 +77,9 @@ class Dispatcher:
             used+=db.execute("SELECT coalesce(sum(weight),0) FROM dispatch_baseline WHERE attempted>=?",(stamp,)).fetchone()[0]
             need(used<cap,"budget_exhausted")
 
-    def deliver(self,body,roles):
+    def deliver(self,body,roles,*,continuation=None):
         validate_request(body,roles=roles)
+        authorize=self.authorize if continuation is None else continuation[0]
         attempt=body["attempt_id"];source=body["source_event_id"];payload=body["payload"]
         body_hash=digest(payload);role=canonical([body["workflow"],body["node"],body["operation"]])
         with self.fence.lock():
@@ -88,7 +93,7 @@ class Dispatcher:
                 now=int(self.clock())
                 owner=db.execute("SELECT owner FROM owner_epoch").fetchone()[0]
                 need(owner,"no_sender")
-                grant=self.authorize(body,owner,now)
+                grant=authorize(body,owner,now)
                 jid=grant["destination_jid"]
                 need(grant["epoch"]==owner and grant["until"]>now and jid==payload["number"]+"@s.whatsapp.net","invalid_dispatch_proof")
                 need(grant["payload_sha256"]==body_hash,"payload_changed")
@@ -110,10 +115,20 @@ class Dispatcher:
                 need(not db.execute("SELECT 1 FROM dispatch_attempts WHERE source=? AND body_hash=?",(source,body_hash)).fetchone(),"duplicate_business_effect")
                 self.check_budget(db,now,grant)
                 now=int(self.clock())
-                need(self.authorize(body,owner,now)==grant and grant["until"]>now,"dispatch_proof_changed")
+                if continuation is not None:
+                    continuation[1]()
+                need(authorize(body,owner,int(self.clock()))==grant and grant["until"]>now,"dispatch_proof_changed")
                 self.check_budget(db,now,grant)
+                need(grant["until"]>int(self.clock()),"dispatch_proof_expired")
                 db.execute("INSERT INTO dispatch_attempts VALUES(?,?,?,?,?,?,?,'sending',NULL)",(attempt,source,role,body_hash,jid,owner,now))
                 db.execute("INSERT INTO dispatch_content VALUES(?,?)",(attempt,submitted_content(payload)))
+                nxt=grant.get("next_part")
+                if nxt is not None:
+                    need(body["operation"]=="sendText" and isinstance(nxt,dict) and set(nxt)=={"id","payload_sha256"} and
+                         isinstance(nxt["id"],str) and re.fullmatch(r"[0-9a-f-]{36}",nxt["id"]) and nxt["id"]!=attempt and
+                         isinstance(nxt["payload_sha256"],str) and re.fullmatch(r"[0-9a-f]{64}",nxt["payload_sha256"]),
+                         "invalid_continuation_grant")
+                    db.execute("INSERT INTO dispatch_next_grants VALUES(?,?,?,?)",(attempt,nxt["id"],nxt["payload_sha256"],grant["until"]))
             try:
                 native_payload={**payload,"number":jid.split("@")[0]}
                 reply=accepted_response(self.transport(body["native_path"],native_payload),jid,submitted)

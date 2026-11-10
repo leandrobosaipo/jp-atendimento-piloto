@@ -7,6 +7,7 @@ from pathlib import Path
 import re
 import socket
 import socketserver
+import sqlite3
 import stat
 import struct
 import urllib.request
@@ -17,6 +18,7 @@ from bridge import Held, Outbox, canonical, digest, need
 from dispatch import Dispatcher
 from dispatch_contract import INSTANCE
 from dispatch_receipt import delivery_state, evidence, match_event, open_record, verify_echo
+from resume import ResumePlan
 from personal import NoRedirect, ORIGIN
 
 CONFIG = Path("/etc/jp-dispatch")
@@ -158,7 +160,7 @@ class Policy:
         need(ownership["mode"]=="owned" and ownership["owner"]=="central-dell" and
              ownership["epoch"]==policy["epoch"] and expiry>dt.datetime.now(dt.timezone.utc),"receipt_owner_disabled")
 
-    def authorize(self, body, epoch, now):
+    def authorize(self, body, epoch, now, *, continuation=None):
         policy = self.policy()
         ownership = read_private(self.ops / "ownership.json", self.admin_uid, mode=0o440, gid=self.core_gid)
         expiry = dt.datetime.fromisoformat(ownership["until"])
@@ -167,8 +169,17 @@ class Policy:
              expiry.utcoffset() == dt.timedelta(0), "sender_fenced")
         matches = [r for r in policy["roles"] if all(r[k] == body[k] for k in ("workflow","node","operation"))]
         need(len(matches) == 1 and matches[0]["role"] in ownership["roles"], "unbound_role")
-        name = hashlib.sha256(body["attempt_id"].encode()).hexdigest() + ".json"
-        proof = read_private(self.ops / "dispatch-proofs" / name, self.core_uid)
+        if continuation is None:
+            need(matches[0]["role"]!="public_art_continuation","continuation_receipt_required")
+            name = hashlib.sha256(body["attempt_id"].encode()).hexdigest() + ".json"
+            proof = read_private(self.ops / "dispatch-proofs" / name, self.core_uid)
+        else:
+            need(matches[0]["role"]=="public_art_continuation" and body["operation"]=="sendMedia" and
+                 continuation["next"]==body["attempt_id"] and continuation["source"]==body["source_event_id"] and
+                 continuation["epoch"]==epoch,"invalid_continuation_role")
+            proof={k:body[k] for k in ("workflow","node","instance","operation","source_event_id","attempt_id","execution")}
+            proof.update(epoch=epoch,until=continuation["until"],destination_jid=continuation["destination"],
+                         payload_sha256=continuation["payload_hash"],prior_attempt_id=continuation["attempt"])
         need(all(proof[k] == body[k] for k in ("workflow","node","instance","operation","source_event_id","attempt_id","execution"))
              and proof["epoch"] == epoch and type(proof["until"]) is int and now < proof["until"] <= int(expiry.timestamp())
              and proof["payload_sha256"] == digest(body["payload"]), "stale_or_changed_dispatch_proof")
@@ -211,16 +222,61 @@ class Evolution:
         return self.post(path, payload)
 
 
+def resume_record(server, request):
+    policy=server.policy
+    cfg=read_private(policy.config/"resume.json",policy.admin_uid)
+    need(cfg["epoch"]==policy.policy()["epoch"],"continuation_owner_changed")
+    def conversation(identifier):
+        with socket.socket(socket.AF_UNIX,socket.SOCK_STREAM) as client:
+            client.settimeout(6)
+            client.connect(cfg["chat_socket"])
+            peer=client.getsockopt(socket.SOL_SOCKET,socket.SO_PEERCRED,struct.calcsize("3i"))
+            need(struct.unpack("3i",peer)[1]==cfg["reader_uid"],"continuation_reader_changed")
+            client.sendall((canonical({"conversation":identifier})+"\n").encode())
+            with client.makefile("rb") as stream:
+                raw=stream.readline(4097)
+                need(len(raw)<=4096 and raw.endswith(b"\n"),"invalid_conversation_readback")
+                return json.loads(raw)
+    def image_bytes(asset, expected):
+        manifest=Path(cfg["manifest"]).read_bytes()
+        need(hashlib.sha256(manifest).hexdigest()==cfg["manifest_sha256"],"art_manifest_changed")
+        items=[a for a in json.loads(manifest)["assets"] if a["id"]==asset and a["approved"] is True and a["sha256"]==expected]
+        need(len(items)==1,"unapproved_art")
+        filename=items[0]["filename"]
+        need(Path(filename).name==filename and filename not in (".",".."),"invalid_art_path")
+        path=Path(cfg["assets"])/filename
+        need(path.resolve()==path and path.is_file() and 0<path.stat().st_size==items[0]["bytes"]<=16000000,"invalid_art_file")
+        return path.read_bytes()
+    sender=server.dispatcher
+    need(Path(cfg["ledger"]).resolve()==Path(sender.box.path).resolve(),"continuation_ledger_mismatch")
+    ready=ResumePlan(cfg,conversation,image_bytes).prepare(request)
+    if not ready:return {"status":"no_continuation"}
+    body,prior,human_free=ready
+    with sender.box.db() as db:
+        if db.execute("SELECT 1 FROM dispatch_resume_holds WHERE next=?",(prior["next"],)).fetchone():
+            return {"status":"human"}
+    auth=lambda b,e,t:policy.authorize(b,e,t,continuation=prior)
+    try:
+        human_free()
+        status,_=sender.deliver(body,{(cfg["workflow"],cfg["node"],"sendMedia")},continuation=(auth,human_free))
+    except Held as exc:
+        if exc.args!=("human_ownership",):raise
+        with sender.box.db() as db:
+            db.execute("INSERT OR IGNORE INTO dispatch_resume_holds VALUES(?,'human_ownership')",(prior["next"],))
+        return {"status":"human"}
+    return {"status":"accepted" if status==201 else "delivery_unknown"}
+
+
 class Handler(BaseHTTPRequestHandler):
     def log_message(self, *args):
         pass
 
     def do_POST(self):
         try:
-            need(self.path in ("/deliver","/receipt","/receipt-event"), "unknown_path")
+            need(self.path in ("/deliver","/receipt","/receipt-event","/resume-record"), "unknown_path")
             peer = self.connection.getsockopt(socket.SOL_SOCKET, socket.SO_PEERCRED, struct.calcsize("3i"))
             uid = struct.unpack("3i", peer)[1]
-            if self.path == "/receipt-event":
+            if self.path in ("/receipt-event","/resume-record"):
                 self.server.policy.receipt_peer(uid)
             else:
                 roles = self.server.policy.roles(uid)
@@ -233,13 +289,15 @@ class Handler(BaseHTTPRequestHandler):
             self.connection.settimeout(10)
             raw = self.rfile.read(length)
             need(len(raw) == length, "truncated_request")
-            if self.path=="/receipt-event":
+            if self.path=="/resume-record":
+                status,result=200,resume_record(self.server,json.loads(raw))
+            elif self.path=="/receipt-event":
                 status,result=200,observe_event(self.server.dispatcher,json.loads(raw))
             elif self.path=="/receipt":
                 status,result=200,observe_records(self.server.dispatcher,json.loads(raw))
             else:
                 status, result = self.server.dispatcher.deliver(json.loads(raw), roles)
-        except (Held, ValueError, KeyError, OSError, TypeError, AttributeError):
+        except (Held, ValueError, KeyError, OSError, TypeError, AttributeError,sqlite3.Error):
             status, result = 409, {"status":"held"}
         self.send_response(status)
         data = canonical(result).encode()
