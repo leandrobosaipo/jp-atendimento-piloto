@@ -19,7 +19,20 @@ def wrap_native(native,expected):
     if hashlib.sha256(native).hexdigest()!=expected:raise ValueError('frozen_native_drift')
     original=b'http.createServer(async (req, res) => {'
     if native.count(original)!=1:raise ValueError('native_listener_drift')
-    return b'import {scopedServer} from "/ops-app/dispatch.mjs";\n'+native.replace(original,b'scopedServer(async (req, res) => {')
+    return b'import {taskServer as scopedServer} from "/ops-app/task_reads.mjs";\n'+native.replace(original,b'scopedServer(async (req, res) => {')
+
+def wrap_reply(native,expected):
+    if hashlib.sha256(native).hexdigest()!=expected:raise ValueError('frozen_reply_drift')
+    replacements={
+        'fetchImpl=deps.fetchImpl||fetch;':'fetchImpl=scopedFetch(deps.fetchImpl||fetch);',
+        'async function readContext(t){':'function readContext(t){return withTask(t,deps.load,()=>readCustomer(t));}\n async function readCustomer(t){',
+        'await readReplyClients(deps.agendaConfig,{fetchImpl})':'await readTaskClients(native)',
+        "async function slots(t,{dates,period='any',context,selection}={}){":"function slots(t,opts){return withTask(t,deps.load,()=>readSlots(t,opts));}\n async function readSlots(t,{dates,period='any',context,selection}={}){",
+    }
+    for old,new in replacements.items():
+        if native.count(old.encode())!=1:raise ValueError('reply_adapter_drift')
+        native=native.replace(old.encode(),new.encode())
+    return b'import {withTask,scopedFetch,readTaskClients} from "/ops-app/task_reads.mjs";\n'+native
 
 if __name__=='__main__':
     p=argparse.ArgumentParser();p.add_argument('inputs',type=Path);p.add_argument('dest',type=Path);p.add_argument('--apply',action='store_true');a=p.parse_args()
