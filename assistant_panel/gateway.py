@@ -169,10 +169,11 @@ FROM turns""",(start,end,start)).fetchone()
                 self.db.commit();return self.response(r,True)
             total,today,count=self.quotas(day)
             n=self.db.execute("SELECT count(*) FROM turns WHERE session=?",(sid,)).fetchone()[0]
-            if n>=SESSION_REQUESTS:raise Refused("session_limit")
+            local_policy = trusted is not None and "local_reply" in trusted
+            if n>=SESSION_REQUESTS and not local_policy:raise Refused("session_limit")
             hist=[tuple(v) for v in self.db.execute("SELECT question,answer FROM turns WHERE session=? AND status='complete' AND question IS NOT NULL ORDER BY rowid DESC LIMIT 3",(sid,))][::-1]
             voice_id,opening=persona(self.kb)
-            if trusted is not None and "local_reply" in trusted:
+            if local_policy:
                 words=trusted["local_reply"];decision=trusted.get("local_decision")
                 if not isinstance(words,str) or not 0<len(words)<=1600 or decision not in ("answer","handoff"):raise Refused("invalid_context")
                 if not hist and decision=="answer":words=opening+" "+words

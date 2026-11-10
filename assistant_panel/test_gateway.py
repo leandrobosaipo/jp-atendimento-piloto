@@ -1,4 +1,6 @@
 import json
+import hashlib
+import hmac
 import os
 import tempfile
 import unittest
@@ -21,6 +23,17 @@ class Tests(unittest.TestCase):
         self.fake=fake;self.g=Gateway(self.path,KB,"fake",fake);self.addCleanup(lambda:self.g.db.close())
         self.sid=uid()
     def msg(self,q="What are the hours?"):return {"op":"ask","session":self.sid,"id":uid(),"text":q}
+    def test_signed_local_policy_after_session_limit(self):
+        self.g.context_key=b"fixture-only"
+        for _ in range(8):self.g.handle(self.msg("Oi"))
+        with self.assertRaisesRegex(Refused,"session_limit"):self.g.handle(self.msg())
+        signed={"id":uid(),"session":self.sid,"text":"Tabela","context":{"local_reply":"Tabela do laboratório.","local_decision":"answer"}}
+        raw=json.dumps(signed,ensure_ascii=False,separators=(",",":"),sort_keys=True).encode()
+        msg={**signed,"op":"integrated","signature":hmac.new(self.g.context_key,raw,hashlib.sha256).hexdigest()}
+        row=self.g.handle(msg)
+        self.assertEqual((row["mode"],row["reply"],row["estimate_micro_usd"]),("local","Tabela do laboratório.",0))
+        self.assertTrue(self.g.handle(msg)["replayed"])
+        self.assertEqual(self.sent,[])
     def test_continuity_and_replay(self):
         m=self.msg();first=self.g.handle(m);second=self.g.handle(m)
         self.assertTrue(second["replayed"]);self.assertEqual(len(self.sent),1)
