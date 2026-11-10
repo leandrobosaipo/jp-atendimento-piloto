@@ -1,7 +1,7 @@
 name: Transactional read boundary
 on:
   push:
-    branches: ['codex/nucleo-transacional-agenda-dell','codex/jp-erro-suporte-isolado','codex/jp-relogio-confirmacoes-dell']
+    branches: ['codex/nucleo-transacional-agenda-dell','codex/jp-erro-suporte-isolado','codex/jp-relogio-confirmacoes-dell','codex/jp-grafos-pendentes-dell']
 permissions: {contents: read}
 jobs:
   contract:
@@ -12,6 +12,8 @@ jobs:
           python3 core_sync/test_source.py
           python3 core_sync/test_error_proof.py
           python3 core_sync/test_clock.py
+          python3 -m py_compile core_sync/aux_graph.py
+          node --test core_sync/test_auxiliary.mjs
           node --check core_sync/clock_runner.mjs
           node --check core_sync/clock_source.mjs
           node --check core_sync/server.mjs
