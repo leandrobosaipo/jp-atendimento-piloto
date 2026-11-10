@@ -1,0 +1,163 @@
+"""JP dispatch entry point. Unix peers and private permits are checked independently."""
+import datetime as dt
+import hashlib
+import json
+import os
+from pathlib import Path
+import re
+import socket
+import socketserver
+import stat
+import struct
+import urllib.request
+from http.server import BaseHTTPRequestHandler
+from uuid import UUID
+
+from bridge import Held, Outbox, canonical, digest, need
+from dispatch import Dispatcher
+from dispatch_contract import INSTANCE
+from personal import NoRedirect, ORIGIN
+
+CONFIG = Path("/etc/jp-dispatch")
+OPS = Path("/var/lib/jp-migracao-revisao/core-operacional/ops-state")
+SOCKET = Path("/run/jp-dispatch/dispatch.sock")
+LEDGER = Path("/var/lib/jp-dispatch/ledger.sqlite3")
+CORE_UID = 64681
+MAX_REQUEST = 25 * 1024 * 1024
+
+
+def read_private(path, uid):
+    """Walk directory FDs without following symlinks, including parent components."""
+    directory = os.open("/", os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        for component in path.absolute().parts[1:-1]:
+            child = os.open(component, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=directory)
+            os.close(directory)
+            directory = child
+        fd = os.open(path.name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=directory)
+        with os.fdopen(fd, "rb") as stream:
+            info = os.fstat(fd)
+            need(stat.S_ISREG(info.st_mode) and info.st_uid == uid and info.st_nlink == 1 and
+                 stat.S_IMODE(info.st_mode) == 0o600, "unsafe_proof_file")
+            data = stream.read(65537)
+            need(len(data) <= 65536, "proof_too_large")
+            return json.loads(data)
+    finally:
+        os.close(directory)
+
+
+class Policy:
+    def __init__(self, config=CONFIG, ops=OPS, admin_uid=0, core_uid=CORE_UID):
+        self.config = config
+        self.ops = ops
+        self.admin_uid = admin_uid
+        self.core_uid = core_uid
+
+    def policy(self):
+        return read_private(self.config / "policy.json", self.admin_uid)
+
+    def roles(self, uid):
+        policy = self.policy()
+        need(uid == self.core_uid and policy["mode"] == "owned", "peer_or_sender_disabled")
+        return {(p["workflow"], p["node"], p["operation"]) for p in policy["roles"]}
+
+    def authorize(self, body, epoch, now):
+        policy = self.policy()
+        ownership = read_private(self.ops / "ownership.json", self.core_uid)
+        expiry = dt.datetime.fromisoformat(ownership["until"])
+        need(ownership["mode"] == policy["mode"] == "owned" and ownership["owner"] == "central-dell" and
+             str(UUID(epoch)) == epoch == ownership["epoch"] == policy["epoch"] and
+             expiry.utcoffset() == dt.timedelta(0), "sender_fenced")
+        matches = [r for r in policy["roles"] if all(r[k] == body[k] for k in ("workflow","node","operation"))]
+        need(len(matches) == 1 and matches[0]["role"] in ownership["roles"], "unbound_role")
+        name = hashlib.sha256(body["attempt_id"].encode()).hexdigest() + ".json"
+        proof = read_private(self.ops / "dispatch-proofs" / name, self.core_uid)
+        need(all(proof[k] == body[k] for k in ("workflow","node","instance","operation","source_event_id","attempt_id","execution"))
+             and proof["epoch"] == epoch and type(proof["until"]) is int and now < proof["until"] <= int(expiry.timestamp())
+             and proof["payload_sha256"] == digest(body["payload"]), "stale_or_changed_dispatch_proof")
+        caps = {}
+        for period in ("minute","hour","day"):
+            cap, reserve = policy["limits"][period], policy["priority_reserve"][period]
+            need(type(cap) is int and type(reserve) is int and 0 <= reserve <= cap and cap > 0, "invalid_budget")
+            need(type(matches[0]["commercial"]) is bool, "invalid_budget_role")
+            caps[period] = cap - (reserve if matches[0]["commercial"] else 0)
+        return {**proof, "limits":caps, "approved_asset_hashes":policy["approved_asset_hashes"],
+                "budget_marker":policy["budget_marker"]}
+
+
+class Evolution:
+    def __init__(self, config=CONFIG):
+        self.config = config
+        self.opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), NoRedirect())
+
+    def post(self, path, payload):
+        access = read_private(self.config / "evolution.json", 0)
+        need(access["origin"] == ORIGIN and access["instance"] == INSTANCE, "wrong_provider")
+        request = urllib.request.Request(ORIGIN + path, method="POST", data=canonical(payload).encode(),
+                                         headers={"Content-Type":"application/json", "apikey":access["token"],
+                                                  "CF-Access-Client-Id":access["client_id"],
+                                                  "CF-Access-Client-Secret":access["client_secret"]})
+        with self.opener.open(request, timeout=20) as result:
+            data = result.read(524289)
+            need(len(data) <= 524288, "provider_reply_too_large")
+            return json.loads(data)
+
+    def verify(self, number, jid):
+        rows = self.post("/chat/whatsappNumbers/" + INSTANCE, {"numbers":[number]})
+        need(isinstance(rows, list) and len(rows) == 1 and rows[0].get("exists") is True and
+             str(rows[0].get("number")) == number and rows[0].get("jid") == jid, "unverified_native_identity")
+
+    def __call__(self, path, payload):
+        need(path in ("/message/sendText/" + INSTANCE, "/message/sendMedia/" + INSTANCE), "invalid_native_path")
+        return self.post(path, payload)
+
+
+class Handler(BaseHTTPRequestHandler):
+    def log_message(self, *args):
+        pass
+
+    def do_POST(self):
+        try:
+            need(self.path == "/deliver", "unknown_path")
+            peer = self.connection.getsockopt(socket.SOL_SOCKET, socket.SO_PEERCRED, struct.calcsize("3i"))
+            roles = self.server.policy.roles(struct.unpack("3i", peer)[1])
+            lengths = self.headers.get_all("Content-Length", [])
+            need(len(lengths) == 1 and re.fullmatch(r"[1-9][0-9]{0,7}", lengths[0]) and
+                 not self.headers.get_all("Transfer-Encoding") and self.headers.get_content_type() == "application/json",
+                 "invalid_request")
+            length = int(lengths[0])
+            need(length <= MAX_REQUEST, "request_too_large")
+            self.connection.settimeout(10)
+            raw = self.rfile.read(length)
+            need(len(raw) == length, "truncated_request")
+            status, result = self.server.dispatcher.deliver(json.loads(raw), roles)
+        except (Held, ValueError, KeyError, OSError, TypeError, AttributeError):
+            status, result = 409, {"status":"held"}
+        self.send_response(status)
+        data = canonical(result).encode()
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(data)))
+        self.end_headers()
+        self.wfile.write(data)
+
+
+class Server(socketserver.UnixStreamServer):
+    def get_request(self):
+        connection, address = super().get_request()
+        connection.settimeout(10)
+        return connection, address
+
+
+def main():
+    os.umask(0o077)
+    native, policy = Evolution(), Policy()
+    with Server(str(SOCKET), Handler) as server:
+        os.chown(SOCKET, 0, CORE_UID)
+        os.chmod(SOCKET, 0o660)
+        server.policy = policy
+        server.dispatcher = Dispatcher(Outbox(LEDGER), policy.authorize, native, verify_number=native.verify)
+        server.serve_forever()
+
+
+if __name__ == "__main__":
+    main()

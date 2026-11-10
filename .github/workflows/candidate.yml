@@ -34,5 +34,6 @@ jobs:
           python3 integration/test_parts.py
           python3 integration/test_personal_intake.py
           python3 channels/test_dispatch_contract.py
+          sudo unshare --net -- setpriv --reuid="$(id -u)" --regid="$(id -g)" --clear-groups --no-new-privs env -i PATH=/usr/bin:/bin python3 -B channels/test_dispatch.py
           node --check assistant_panel/cockpit/panel.js
           node --check integration/cockpit/app.js
