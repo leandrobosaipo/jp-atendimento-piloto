@@ -8,13 +8,16 @@ import uuid
 from pathlib import Path
 
 from bridge import human_pause,intake_held,need
-from policy import classify,norm
+from policy import classify,norm,stops_contact
 
 
 def decide(question, request, occasion, source, query, assistant):
     options=dict(intent="auto",service="",professional="",date="")
     intent, service, professional, day=classify(question,options,source)
     handoff={"action":"human","reason":"team_review"}
+    # A request to stop contact must reach the team even if the same message asks a question.
+    if stops_contact(question):
+        return {"action":"human","reason":"pedido para interromper mensagens"}
     if intent=="sensitive" or re.search(r"\b(cancel\w*|remarc\w*|reagend\w*|meu horario|minha agenda|meu saldo|meus creditos|pag\w*|financeir\w*|cadastr\w*|confirm\w*|pix|contrat\w*|quero marcar|quero agendar)\b",norm(question)):
         return handoff
     if intent=="availability":

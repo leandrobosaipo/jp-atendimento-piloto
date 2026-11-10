@@ -2,8 +2,17 @@ import pathlib,sys,unittest
 sys.path.insert(0,str(pathlib.Path(__file__).resolve().parent))
 sys.path.insert(0,str(pathlib.Path(__file__).resolve().parents[1]/"channels"))
 from service_request import decide
+from policy import classify
 
 class Decisions(unittest.TestCase):
+    def test_stop_contact_precedes_availability_and_knowledge(self):
+        def unexpected(*args):
+            self.fail("stop-contact request reached an external reader")
+        for text in ("Pare de me enviar mensagens","Não quero mais mensagens, quanto custa?", "STOP", "Quero sair. Tem horário amanhã?"):
+            with self.subTest(text=text):
+                self.assertEqual(classify(text,dict(intent="auto",service="",professional="",date=""),{})[0],"sensitive")
+                result=decide(text,"request","case",{},unexpected,unexpected)
+                self.assertEqual(result,{"action":"human","reason":"pedido para interromper mensagens"})
     def test_reads_only_for_a_specific_public_slot_query(self):
         provider={"services":{"maintenance":{}},"professionals":{"pedro":{"name":"Pedro"},"jp":{"name":"JP"}}}
         calls=[]
