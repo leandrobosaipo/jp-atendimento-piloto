@@ -7,7 +7,9 @@ import tempfile
 import unittest
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
-from customer_ingress import Chatwoot, Intake, Held, digest, receipt_id
+from customer_ingress import Chatwoot, Intake, Held, digest, receipt_id, process_channel
+from customer_ingress import native_sender
+from claimed_customer import ClaimClosed, ClaimedDirectory
 from customer_planner import PlannerReservation, ReservationError
 
 
@@ -151,6 +153,78 @@ class IngressTest(unittest.TestCase):
             self.app.receive(bad)
         self.assertEqual(self.chat.incoming_calls, 0)
 
+    def test_bidirectional_instance_native_link(self):
+        lid = "100000001@lid"
+        proof = {"instance": INSTANCE, "paused": False,
+                 "forward": {KNOWN: lid}, "reverse": {lid: KNOWN}}
+        self.app.bindings = lambda: proof
+        def linked(sender, alt=None):
+            body = self.event(sender, native="LINKED001")
+            raw = json.loads(base64.b64decode(body["raw_base64"]))
+            if alt is not None:
+                raw["data"]["key"]["remoteJidAlt"] = alt
+            encoded = json.dumps(raw, separators=(",", ":")).encode()
+            return {**body, "raw_base64": base64.b64encode(encoded).decode(),
+                    "record_id": receipt_id(INSTANCE, encoded)}
+        first = self.app.receive(linked(lid, KNOWN))
+        self.assertEqual(first["state"], "ready")
+        self.assertEqual((first["workflow"], first["execution"]), ("fixture-wf", "101"))
+        self.assertEqual(self.app.receive(linked(lid, KNOWN)), first)
+        self.assertEqual(self.chat.incoming_calls, 1)
+        for changed in (
+            {**proof, "paused": True},
+            {**proof, "instance": "other"},
+            {**proof, "reverse": {}},
+            {**proof, "reverse": {lid: NEW}},
+            {**proof, "forward": {KNOWN: lid, NEW: lid}},
+        ):
+            with self.assertRaises(Held):
+                native_sender({"key": {"fromMe": False, "remoteJid": lid,
+                                       "remoteJidAlt": KNOWN}}, INSTANCE, changed)
+        with self.assertRaises(Held):
+            native_sender({"key": {"fromMe": False, "remoteJid": lid,
+                                   "remoteJidAlt": NEW}}, INSTANCE, proof)
+        with self.assertRaises(Held):
+            native_sender({"key": {"fromMe": False, "remoteJid": "123@g.us"}}, INSTANCE, proof)
+
+    def test_claimed_collector_handoff_keeps_execution_and_never_sends(self):
+        lid = "100000001@lid"
+        proof = {"instance": INSTANCE, "instance_id_hash": "a" * 64, "paused": False,
+                 "forward": {KNOWN: lid}, "reverse": {lid: KNOWN}}
+        self.config.update(channel_epoch="12345678-1234-1234-1234-123456789abc",
+                           channel_workflow="candidatewf", native_instance_id_hash="a" * 64)
+        self.app.bindings = lambda: proof
+        body = self.event(lid, native="LINKED002")
+        raw = base64.b64decode(body["raw_base64"])
+        proof.update(epoch=self.config["channel_epoch"], record_id=body["record_id"])
+        self.config["channel_fixture_records"] = [body["record_id"]]
+        class FakeHeldPlan:
+            calls = 0
+            def prepare(self, values):
+                self.calls += 1
+                return {"status": "prepared_held", "parts": [1, 2], "transport_attempts": 0}
+        plan = FakeHeldPlan()
+        def call(execution):
+            return process_channel(raw, body["record_id"], "candidatewf", execution,
+                                   self.config["channel_epoch"], self.config,
+                                   self.app, self.planner, plan)
+        first = call("701")
+        self.assertEqual((first["status"], first["plan"], first["execution"], first["first_execution"]),
+                         ("retained", "prepared_held", "701", "701"))
+        retry = call("702")
+        self.assertEqual((retry["intake"], retry["reservation"], retry["first_execution"]),
+                         (first["intake"], first["reservation"], "701"))
+        self.assertEqual(retry["execution"], "702")
+        self.assertEqual(self.chat.incoming_calls, 1)
+        self.assertEqual(self.chat.outgoing_calls, 0)
+        self.app.bindings = lambda: {**proof, "reverse": {}}
+        held = call("703")
+        self.assertEqual((held["status"], held["reason"]),
+                         ("retained", "native_identity_unverified"))
+        self.assertEqual(self.chat.incoming_calls, 1)
+        self.app.bindings = lambda: {**proof, "record_id": "0" * 64}
+        self.assertEqual(call("704")["reason"], "native_identity_unverified")
+
     def test_reservation_rejects_wrong_chatwoot_ids(self):
         row = self.app.receive(self.event(KNOWN))
         submitted = {k: row[k] for k in ("request", "record", "account", "inbox", "contact", "conversation", "message", "state")}
@@ -158,6 +232,62 @@ class IngressTest(unittest.TestCase):
             self.planner.reserve({**submitted, "conversation": row["conversation"] + 1})
         with self.planner.db() as db:
             self.assertEqual(db.execute("SELECT count(*) FROM reservations").fetchone()[0], 0)
+
+    def test_live_claim_scopes_official_reads_and_blocks_conflicting_phones(self):
+        import sqlite3
+        epoch = "12345678-1234-1234-1234-123456789abc"
+        wf = "sourcewf"
+        self.config.update(channel_epoch=epoch, channel_workflow=wf, native_instance_id_hash=digest(b"fixture-instance"))
+        path = pathlib.Path(self.tmp.name) / "queue.db"
+        queue = sqlite3.connect(path)
+        self.addCleanup(queue.close)
+        queue.executescript("CREATE TABLE owner(slot,epoch,fixture);CREATE TABLE receipts(id,state,execution,epoch)")
+        queue.execute("INSERT INTO owner VALUES(1,?,NULL)", (epoch,))
+        self.directory["data"][0]["Telefone"] = "+55 11 99000-0002"
+        reads = []
+        def directory():
+            reads.append(1)
+            return 5, self.directory
+        claimed = ClaimedDirectory(path, wf, epoch, directory, lambda n:self.fail("unexpected lookup"))
+        self.app = Intake(self.app.db_path, self.config, self.chat, None, None, claimed=claimed)
+        def event(n, address):
+            body = self.event(address,"CLAIMED00"+str(n))
+            packet = json.loads(base64.b64decode(body["raw_base64"]))
+            packet["data"]["instanceId"] = "fixture-instance"
+            raw = json.dumps(packet).encode()
+            record = receipt_id(INSTANCE,raw)
+            queue.execute("INSERT INTO receipts VALUES(?,'claimed',?,?)", (record,str(n),epoch))
+            queue.commit()
+            return raw, record
+        class Plan:
+            def prepare(self, values):
+                self.mode = values["mode"]
+                return {"status":"prepared_held"}
+        plan = Plan()
+        def submit(data, n):
+            return process_channel(*data,wf,str(n),epoch,self.config,self.app,self.planner,plan)
+        for n,addr in enumerate([KNOWN, NEW, "5511990000099@s.whatsapp.net"], start=1):
+            data = event(n,addr)
+            with self.assertRaises(ClaimClosed):
+                submit(data,n+10)
+            result = submit(data,n)
+            self.assertEqual(result["plan"],"held" if n<3 else "prepared_held")
+            self.assertEqual(submit(data,n),result)
+            self.assertEqual(len(reads),n)
+        self.assertEqual(plan.mode,"public_information")
+        with self.app.db() as db:
+            self.assertEqual(db.execute("SELECT reason FROM intakes WHERE state='held'").fetchall()[0][0],"ambiguous_customer_match")
+            self.assertEqual(list(map(tuple,db.execute("SELECT execution,generation,decision FROM intake_identity_reads ORDER BY execution"))),
+                             [("1",5,"ambiguous_customer_match"),("2",5,"ambiguous_customer_match"),("3",5,"no_customer_match")])
+        raw,record = event(4,NEW)
+        def close_while_reading():
+            queue.execute("UPDATE owner SET epoch=''");queue.commit()
+            return 5, self.directory
+        self.app.claimed.directory = close_while_reading
+        with self.assertRaises(ClaimClosed):
+            submit((raw,record),4)
+        self.assertEqual(self.chat.incoming_calls,3)
+        self.assertEqual(self.chat.outgoing_calls,0)
 
     def test_ambiguous_identity_is_held_without_reservation(self):
         self.directory = {"data": [self.directory["data"][0],
