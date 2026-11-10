@@ -3,6 +3,7 @@ Description=Isolated JP customer inbound materialization pilot
 After=network-online.target atendimento-piloto-integracao.service
 
 [Service]
+LoadCredential=integration-hmac:/etc/atendimento-piloto-integracao/integration.key
 Type=simple
 User=root
 Group=root

@@ -15,6 +15,55 @@ from test_customer_ingress import FakeChatwoot, INSTANCE, KNOWN, NEW
 
 
 class TestHeldPlan(unittest.TestCase):
+    def test_first_reply_binds_native_record_claim_and_destination(self):
+        import sqlite3
+        import uuid
+        from bridge import Held
+        from claimed_customer import ClaimedDirectory
+        from customer_ingress import process_channel
+        from dispatch_contract import INSTANCE as provider
+        from first_reply import prepare_first
+        root=pathlib.Path(self.app.db_path).parent
+        epoch=str(uuid.uuid4())
+        self.config=dict(self.app.cfg,instance=provider,channel_epoch=epoch,channel_workflow="wf",
+                         native_instance_id_hash=hashlib.sha256(b"fixture").hexdigest())
+        raw=json.dumps({"instance":provider,"event":"messages.upsert","data":{"instanceId":"fixture",
+            "messageTimestamp":100,"key":{"fromMe":False,"remoteJid":NEW,"id":"FIRST0001"},
+            "message":{"conversation":"Quero ver a tabela de serviços"}}}).encode()
+        record=receipt_id(provider,raw)
+        queue=sqlite3.connect(root/"queue.sqlite3")
+        self.addCleanup(queue.close)
+        queue.executescript("CREATE TABLE receipts(id,state,execution,epoch); CREATE TABLE owner(slot,epoch,fixture)")
+        queue.execute("INSERT INTO owner VALUES(1,?,NULL)",(epoch,))
+        queue.execute("INSERT INTO receipts VALUES(?,'claimed','8',?)",(record,epoch));queue.commit()
+        original=self.app.directory
+        claimed=ClaimedDirectory(root/"queue.sqlite3","wf",epoch,lambda:(121,original()),lambda _:[])
+        self.app=Intake(self.app.db_path,self.config,self.chat,None,None,claimed=claimed)
+        output=process_channel(raw,record,"wf","8",epoch,self.config,self.app,self.reserve,self.plan)
+        self.assertEqual(output["plan"],"prepared_held")
+        cfg=dict(workflow="wf",epoch=epoch,node="short-text",account=12,inbox=22,queue=root/"queue.sqlite3",
+                 intakes=self.app.db_path,reservations=self.reserve.path,plans=self.plan.path,
+                 instance_hash=self.config["native_instance_id_hash"],not_before=99)
+        req=dict(record=record,workflow="wf",execution="8",epoch=epoch,sender=NEW)
+        source=lambda _:({"receivedAt":"1970-01-01T00:01:40Z","rawSha256":hashlib.sha256(raw).hexdigest()},json.loads(raw))
+        def conversation(cid):
+            c=self.chat.conversation_readback(cid)
+            c["meta"]["sender"]["identifier"]="jp-intake-"+hashlib.sha256(NEW.encode()).hexdigest()
+            return {**c,"status":"open"}
+        image=lambda a,h:self.plan.asset_bytes(self.artworks[a]["filename"])
+        def admit(config,request):
+            return prepare_first(config,request,source,conversation,image,102)
+        body,nxt,guard=admit(cfg,req)
+        self.assertEqual(body["payload"],{"number":NEW.split("@")[0],"text":"Aqui está a tabela de serviços."})
+        self.assertNotEqual(body["attempt_id"],nxt["id"]);guard()
+        for settings,request in [(dict(cfg,not_before=101),req),(cfg,dict(req,sender=KNOWN)),(cfg,dict(req,execution="9"))]:
+            with self.assertRaises(Held):admit(settings,request)
+        self.chat.assigned=True
+        with self.assertRaisesRegex(Held,"human_ownership"):guard()
+        self.chat.assigned=False
+        queue.execute("UPDATE owner SET epoch=''");queue.commit()
+        with self.assertRaisesRegex(Held,"intake_owner_changed"):guard()
+
     def setUp(self):
         temp = tempfile.TemporaryDirectory()
         self.addCleanup(temp.cleanup)
@@ -126,6 +175,21 @@ class TestHeldPlan(unittest.TestCase):
             self.plan.prepare(self.query(reservation))
         with self.plan.db() as db:
             self.assertEqual(db.execute("SELECT count(*) FROM held_parts").fetchone()[0], 0)
+
+    def test_service_requests_survive_restarts_and_require_their_own_handler(self):
+        for label,question,category in (("A","Quais horários amanhã?","availability"),
+                ("B","Bom dia!","chat"),("C","Estou com uma ferida.","sensitive")):
+            reservation=self.inbound(KNOWN,"FIXTURECASE"+label,question)
+            receipt=self.plan.prepare(self.query(reservation))
+            self.assertEqual((receipt["status"],receipt["service_state"]),("held","pending"))
+            self.assertEqual(self.plan.prepare(self.query(reservation)),receipt)
+            with self.plan.db() as db:
+                row=db.execute("SELECT * FROM service_requests WHERE record=?",(receipt["service_record"],)).fetchone()
+                self.assertEqual((row["reservation"],row["category"],row["message"]),
+                                 (reservation["reservation"],category,reservation["message"]))
+        with self.plan.db() as db:
+            self.assertEqual(db.execute("SELECT count(*) FROM service_requests").fetchone()[0],3)
+            self.assertEqual(db.execute("SELECT count(*) FROM held_parts").fetchone()[0],0)
 
     def test_wrong_reservation_or_inbound_context_never_prepares(self):
         reservation = self.inbound(KNOWN, "FIXTUREKNOWN003")

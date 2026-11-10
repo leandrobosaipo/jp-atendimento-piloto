@@ -1,0 +1,22 @@
+[Unit]
+Description=Consulta da propriedade humana da conversa no Chatwoot do Dell
+Requires=jp-resume-source.socket
+After=jp-resume-source.socket
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/python3 -B /opt/jp-dispatch/current/chat_resume_source.py
+User=root
+Group=root
+UMask=0077
+NoNewPrivileges=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectSystem=strict
+ProtectHome=yes
+ReadWritePaths=/var/lib/atendimento-piloto-customer-ingress
+RestrictAddressFamilies=AF_UNIX AF_INET
+IPAddressDeny=any
+IPAddressAllow=127.0.0.1/32
+MemoryMax=96M
+TasksMax=8

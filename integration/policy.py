@@ -8,10 +8,12 @@ def norm(s):
     return "".join(c for c in unicodedata.normalize("NFD",s.lower()) if not unicodedata.combining(c))
 
 def currency(cents):return "R$ "+f"{cents//100},{cents%100:02d}"
+def stops_contact(question):
+    return bool(re.search(r"\b(parar|pare|sair|descadastrar|stop)\b|nao.*mensag",norm(question)))
 def classify(question,options,cfg):
     q=norm(question);intent=options["intent"];service=options["service"];prof=options["professional"];date=options["date"]
     # Prioritize sensitive requests and ambiguous identities over requested sales material.
-    if re.search(r"\b(reclam\w*|coceira|ferida|sangr\w*|alerg\w*|cpf|cadastro de clientes|lista de clientes)\b",q):return "sensitive","","",""
+    if stops_contact(question) or re.search(r"\b(reclam\w*|coceira|ferida|sangr\w*|alerg\w*|cpf|cadastro de clientes|lista de clientes)\b",q):return "sensitive","","",""
     if intent=="auto":
         if re.search(r"\b(clube|assinatura|planos?)\b",q):intent="club_art"
         elif re.search(r"\b(horar\w*|vagas?|disponib\w*|agend\w*|marcar|amanha)\b",q):intent="availability"

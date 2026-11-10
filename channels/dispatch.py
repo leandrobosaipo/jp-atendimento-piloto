@@ -2,11 +2,13 @@
 import base64
 import datetime as dt
 import hashlib
+import re
 import time
 from zoneinfo import ZoneInfo
 
 from bridge import canonical, digest, need
 from dispatch_contract import INSTANCE, accepted_response, recipient_binding, validate_request
+from dispatch_receipt import submitted_content
 from evolution import Fence
 
 
@@ -27,6 +29,17 @@ class Dispatcher:
                     native TEXT UNIQUE, UNIQUE(source,body_hash));
                 CREATE INDEX IF NOT EXISTS dispatch_usage ON dispatch_attempts(attempted);
                 CREATE INDEX IF NOT EXISTS dispatch_pending ON dispatch_attempts(destination,state);
+                CREATE TABLE IF NOT EXISTS dispatch_content (attempt TEXT PRIMARY KEY, content_hash TEXT NOT NULL);
+                CREATE TABLE IF NOT EXISTS dispatch_next_grants (
+                    first TEXT PRIMARY KEY, next TEXT UNIQUE NOT NULL, payload_hash TEXT NOT NULL, until INTEGER NOT NULL);
+                CREATE TABLE IF NOT EXISTS dispatch_resume_holds (next TEXT PRIMARY KEY, reason TEXT NOT NULL);
+                CREATE TABLE IF NOT EXISTS dispatch_first_holds (attempt TEXT PRIMARY KEY);
+                CREATE TABLE IF NOT EXISTS dispatch_public_first (attempt TEXT PRIMARY KEY);
+                CREATE TABLE IF NOT EXISTS dispatch_observations (
+                    attempt TEXT NOT NULL, kind TEXT NOT NULL CHECK(kind IN ('echo','delivered','read')),
+                    record TEXT NOT NULL, PRIMARY KEY(attempt,kind));
+                CREATE TABLE IF NOT EXISTS dispatch_receipts (record TEXT NOT NULL, echo TEXT NOT NULL,
+                    attempt TEXT NOT NULL, state TEXT NOT NULL, PRIMARY KEY(record,attempt));
                 CREATE TABLE IF NOT EXISTS dispatch_baseline (
                     id TEXT PRIMARY KEY, attempted INTEGER NOT NULL, weight INTEGER NOT NULL CHECK(weight>0));
                 CREATE INDEX IF NOT EXISTS dispatch_baseline_usage ON dispatch_baseline(attempted);
@@ -66,8 +79,9 @@ class Dispatcher:
             used+=db.execute("SELECT coalesce(sum(weight),0) FROM dispatch_baseline WHERE attempted>=?",(stamp,)).fetchone()[0]
             need(used<cap,"budget_exhausted")
 
-    def deliver(self,body,roles):
+    def deliver(self,body,roles,*,continuation=None):
         validate_request(body,roles=roles)
+        authorize=self.authorize if continuation is None else continuation[0]
         attempt=body["attempt_id"];source=body["source_event_id"];payload=body["payload"]
         body_hash=digest(payload);role=canonical([body["workflow"],body["node"],body["operation"]])
         with self.fence.lock():
@@ -81,7 +95,7 @@ class Dispatcher:
                 now=int(self.clock())
                 owner=db.execute("SELECT owner FROM owner_epoch").fetchone()[0]
                 need(owner,"no_sender")
-                grant=self.authorize(body,owner,now)
+                grant=authorize(body,owner,now)
                 jid=grant["destination_jid"]
                 need(grant["epoch"]==owner and grant["until"]>now and jid==payload["number"]+"@s.whatsapp.net","invalid_dispatch_proof")
                 need(grant["payload_sha256"]==body_hash,"payload_changed")
@@ -92,6 +106,8 @@ class Dispatcher:
                 submitted=payload["number"]
                 jid=self.verify_number(submitted,jid)
                 need(isinstance(jid,str),"unverified_native_identity")
+                if grant.get("require_exact_recipient"):
+                    need(jid==grant["destination_jid"],"native_sender_changed")
                 recipient_binding(submitted,jid)
                 db.execute("BEGIN IMMEDIATE")
                 pending=db.execute("SELECT 1 FROM dispatch_attempts WHERE destination=? AND state IN ('sending','unknown','accepted') LIMIT 1",(jid,)).fetchone()
@@ -103,9 +119,22 @@ class Dispatcher:
                 need(not db.execute("SELECT 1 FROM dispatch_attempts WHERE source=? AND body_hash=?",(source,body_hash)).fetchone(),"duplicate_business_effect")
                 self.check_budget(db,now,grant)
                 now=int(self.clock())
-                need(self.authorize(body,owner,now)==grant and grant["until"]>now,"dispatch_proof_changed")
+                if continuation is not None:
+                    continuation[1]()
+                need(authorize(body,owner,int(self.clock()))==grant and grant["until"]>now,"dispatch_proof_changed")
                 self.check_budget(db,now,grant)
+                need(grant["until"]>int(self.clock()),"dispatch_proof_expired")
                 db.execute("INSERT INTO dispatch_attempts VALUES(?,?,?,?,?,?,?,'sending',NULL)",(attempt,source,role,body_hash,jid,owner,now))
+                db.execute("INSERT INTO dispatch_content VALUES(?,?)",(attempt,submitted_content(payload)))
+                if grant.get("require_exact_recipient"):
+                    db.execute("INSERT INTO dispatch_public_first VALUES(?)",(attempt,))
+                nxt=grant.get("next_part")
+                if nxt is not None:
+                    need(body["operation"]=="sendText" and isinstance(nxt,dict) and set(nxt)=={"id","payload_sha256"} and
+                         isinstance(nxt["id"],str) and re.fullmatch(r"[0-9a-f-]{36}",nxt["id"]) and nxt["id"]!=attempt and
+                         isinstance(nxt["payload_sha256"],str) and re.fullmatch(r"[0-9a-f]{64}",nxt["payload_sha256"]),
+                         "invalid_continuation_grant")
+                    db.execute("INSERT INTO dispatch_next_grants VALUES(?,?,?,?)",(attempt,nxt["id"],nxt["payload_sha256"],grant["until"]))
             try:
                 native_payload={**payload,"number":jid.split("@")[0]}
                 reply=accepted_response(self.transport(body["native_path"],native_payload),jid,submitted)
@@ -122,10 +151,15 @@ class Dispatcher:
         with self.fence.lock(),self.box.db() as db:
             row=db.execute("SELECT * FROM dispatch_attempts WHERE native=?",(native,)).fetchone()
             need(row and row["state"] in ("accepted","delivered","read"),"unbound_native_receipt")
-            proof=verify(dict(row))
+            content=db.execute("SELECT content_hash FROM dispatch_content WHERE attempt=?",(row["attempt"],)).fetchone()
+            proof=verify({**dict(row),"content_hash":content[0] if content else None})
             need(proof.get("instance")==INSTANCE and proof.get("native")==native and proof.get("fromMe") is True and
                  proof.get("destination")==row["destination"] and proof.get("payload_sha256")==row["body_hash"] and
                  proof.get("state") in ("delivered","read"),"unverified_delivery")
             state="read" if "read" in (row["state"],proof["state"]) else "delivered"
+            if "record" in proof:
+                db.execute("INSERT OR IGNORE INTO dispatch_receipts VALUES(?,?,?,?)",(proof["record"],proof["echo"],row["attempt"],proof["state"]))
+                prior=db.execute("SELECT echo,attempt,state FROM dispatch_receipts WHERE record=? AND attempt=?",(proof["record"],row["attempt"])).fetchone()
+                need(tuple(prior)==(proof["echo"],row["attempt"],proof["state"]),"receipt_record_conflict")
             db.execute("UPDATE dispatch_attempts SET state=? WHERE attempt=?",(state,row["attempt"]))
             return state

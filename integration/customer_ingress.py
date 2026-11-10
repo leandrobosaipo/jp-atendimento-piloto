@@ -1,21 +1,27 @@
-"""Isolated collector-to-Chatwoot intake. There is deliberately no send operation."""
+"""Collector-to-Chatwoot intake with an optional handoff to the fenced dispatcher."""
 import base64
-from contextlib import contextmanager
+from contextlib import closing, contextmanager
 import hashlib
 import hmac
+import http.client
 import http.server
 import json
 import os
 import pathlib
 import re
+import socket
 import sqlite3
+import ssl
+import struct
 import sys
+import time
 import urllib.parse
 import urllib.request
 import uuid
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1] / "channels"))
 from customer_identity import resolve
+from bridge import human_pause
 from customer_planner import PlannerReservation, ReservationError
 from customer_plan import HeldPlanner, PlanHeld
 from claimed_customer import ClaimClosed, dell_reader
@@ -57,9 +63,10 @@ def native_sender(data, instance, bindings, instance_id_hash=None, epoch=None, r
     need(isinstance(forward, dict) and isinstance(reverse, dict), "native_mapping_missing")
     key = data["key"]
     need(key.get("fromMe") is False and not key.get("participant") and
-         not key.get("participantAlt"), "native_sender_unverified")
+         not key.get("participantAlt") and not data.get("participant") and
+         not data.get("participantAlt"), "native_sender_unverified")
     addresses = [v for v in (key.get("remoteJid"), key.get("remoteJidAlt"),
-                              data.get("remoteJidAlt")) if v is not None]
+                              data.get("remoteJidAlt"), data.get("remoteJid")) if v is not None]
     need(addresses and all(isinstance(v, str) and (PN.fullmatch(v) or LID.fullmatch(v))
                            for v in addresses), "native_sender_unverified")
     unique = set(addresses)
@@ -157,6 +164,7 @@ class Intake:
                 state TEXT NOT NULL, reason TEXT, contact INTEGER, conversation INTEGER,
                 message INTEGER, workflow TEXT, execution TEXT)""")
             columns = {row[1] for row in db.execute("PRAGMA table_info(intakes)")}
+            db.execute("CREATE INDEX IF NOT EXISTS intake_human_by_contact ON intakes(contact,conversation) WHERE reason='human_ownership'")
             for name in ("workflow", "execution"):
                 if name not in columns:
                     db.execute(f"ALTER TABLE intakes ADD COLUMN {name} TEXT")
@@ -191,17 +199,18 @@ class Intake:
                 **{k: row[k] for k in ("request", "record", "state", "reason", "contact", "conversation", "message",
                                        "workflow", "execution")}}
 
-    def channel_sender(self, data, record):
+    def channel_sender(self, data, record, proof=None):
         cfg = self.cfg
         key = data["key"]
-        addresses = (key.get("remoteJid"), key.get("remoteJidAlt"), data.get("remoteJidAlt"))
-        if self.claimed is not None and all(a is None or isinstance(a,str) and PN.fullmatch(a) for a in addresses):
+        addresses = (key.get("remoteJid"), key.get("remoteJidAlt"), data.get("remoteJidAlt"), data.get("remoteJid"))
+        if self.claimed is not None:
             instance_id = data.get("instanceId")
             need(isinstance(instance_id, str) and instance_id and
                  digest(instance_id.encode()) == cfg["native_instance_id_hash"], "native_instance_identity_changed")
+        if self.claimed is not None and all(a is None or isinstance(a,str) and PN.fullmatch(a) for a in addresses):
             proof = {"instance":cfg["instance"], "instance_id_hash":cfg["native_instance_id_hash"],
                      "epoch":cfg["channel_epoch"], "record_id":record, "paused":False, "forward":{}, "reverse":{}}
-        else:
+        elif proof is None:
             proof = self.bindings()
         return native_sender(data, cfg["instance"], proof, cfg["native_instance_id_hash"],
                              cfg["channel_epoch"], record)
@@ -241,7 +250,15 @@ class Intake:
              (self.chat.account, self.chat.inbox, conv_id, contact_id), "conversation_scope_mismatch")
         return row
 
-    def receive(self, body, *, claim_epoch=None):
+    def release_human(self,contact,conversation,episode):
+        row=self._check_conversation(conversation,contact)
+        meta=row.get("meta") or {}
+        need(row.get("status")=="open" and isinstance(row.get("labels"),list),"human_state_unknown")
+        observed=bool(meta.get("assignee") or meta.get("team") or "jp-atendimento-humano" in row["labels"])
+        return human_pause(self.db_path,(self.chat.account,self.chat.inbox,contact,conversation),observed,
+                           release_episode=episode)
+
+    def receive(self, body, *, claim_epoch=None, native_proof=None):
         """One authenticated n8n call; unknown outcomes remain held, never replayed."""
         need(isinstance(body, dict) and set(body) == {"raw_base64", "record_id", "workflow_id", "execution_id"},
              "invalid_intake")
@@ -263,7 +280,7 @@ class Intake:
         channel = body["workflow_id"] == self.cfg.get("channel_workflow")
         need((channel and claim_epoch is not None and claim_epoch == self.cfg["channel_epoch"])
              or (not channel and claim_epoch is None and self.claimed is None), "channel_claim_required")
-        sender = (self.channel_sender(data, body["record_id"]) if channel else
+        sender = (self.channel_sender(data, body["record_id"], native_proof) if channel else
                   native_sender(data, self.cfg["instance"], self.bindings()))
         message = data.get("message") or {}
         text = message.get("conversation") or (message.get("extendedTextMessage") or {}).get("text")
@@ -295,6 +312,10 @@ class Intake:
             identity = json.dumps(decision, sort_keys=True, separators=(",", ":"))
             contact, source, conv = self._contact(address_hash, identity)
             owner = self._check_conversation(conv, contact)
+            scope=(self.chat.account,self.chat.inbox,contact,conv)
+            meta=owner.get("meta") or {}
+            human_pause(self.db_path,scope,bool(meta.get("assignee") or meta.get("team") or
+                        "jp-atendimento-humano" in (owner.get("labels") or [])),request_id)
             with self.db() as db:
                 db.execute("UPDATE intakes SET contact=?,conversation=?,state='posting' WHERE request=?",
                            (contact, conv, request_id))
@@ -309,7 +330,7 @@ class Intake:
             meta = owner.get("meta") or {}
             labels = owner.get("labels") or []
             human = bool(meta.get("assignee") or meta.get("team") or "jp-atendimento-humano" in labels)
-            if human:
+            if human_pause(self.db_path,scope,human,request_id):
                 reason = "human_ownership"
             elif decision["status"] == "identified":
                 reason = "customer_inactive" if decision["inactive"] else "opt_out" if decision["opt_out"] else None
@@ -329,8 +350,26 @@ class Intake:
             raise
 
 
-def process_channel(raw, record, workflow, execution, epoch, cfg, app, planner, held_plan):
-    """Consume one verified collector handoff; every prepared part stays held."""
+def first_dispatch(path, record):
+    with socket.socket(socket.AF_UNIX,socket.SOCK_STREAM) as sock:
+        sock.settimeout(35)
+        sock.connect(path)
+        peer=sock.getsockopt(socket.SOL_SOCKET,socket.SO_PEERCRED,struct.calcsize("3i"))
+        need(struct.unpack("3i",peer)[1]==0,"unexpected_dispatcher_uid")
+        with closing(http.client.HTTPConnection("localhost")) as client:
+            client.sock=sock
+            client.request("POST","/first-record",json.dumps(record).encode(),{"Content-Type":"application/json"})
+            response=client.getresponse()
+            raw=response.read(1025)
+            need(len(raw)<=1024 and response.status in (200,409),"first_outcome_unknown")
+            result=json.loads(raw)
+            if response.status==409:
+                need(result=={"status":"held"},"invalid_first_response")
+            return result
+
+
+def process_channel(raw, record, workflow, execution, epoch, cfg, app, planner, held_plan, *, business_check=False):
+    """Consume one verified collector handoff and retain the same execution throughout."""
     need(cfg.get("channel_epoch") == epoch and cfg.get("channel_workflow") == workflow and
          isinstance(execution, str) and re.fullmatch(r"[0-9]{1,20}", execution) and
          isinstance(record, str) and re.fullmatch(r"[0-9a-f]{64}", record) and
@@ -340,20 +379,48 @@ def process_channel(raw, record, workflow, execution, epoch, cfg, app, planner, 
         need(record in cfg.get("channel_fixture_records", []), "channel_fixture_scope")
     if app.claimed is not None:
         app.claimed.check(record, workflow, execution, epoch)
+    if business_check:
+        need(business_check in ("confirmed","opt_out","quoted") and app.claimed is not None and type(cfg.get("business_not_before")) is int,"business_route_closed")
+    proof=None
     try:
         envelope = json.loads(raw)
         need(envelope.get("instance") == cfg["instance"] and
              str(envelope.get("event", "")).lower().replace("_", ".") == "messages.upsert",
              "channel_event_invalid")
-        app.channel_sender(envelope["data"], record)
-    except (Held, ValueError, KeyError, TypeError):
+        data=envelope["data"]
+        key=data["key"]
+        addresses=(key.get("remoteJid"),key.get("remoteJidAlt"),data.get("remoteJid"),data.get("remoteJidAlt"))
+        if cfg.get("native_pair_reader") and any(isinstance(a,str) and LID.fullmatch(a) for a in addresses):
+            need(app.claimed is not None,"claim_required")
+            proof=read_claimed_pair(cfg["native_pair_reader"],raw,record,epoch)
+            app.claimed.check(record,workflow,execution,epoch)
+        sender=app.channel_sender(data, record, proof)
+    except (Held, ValueError, KeyError, TypeError, OSError, http.client.HTTPException):
         # The encrypted collector record remains the durable review source.
         return {"ok": True, "record_id": record, "workflow": workflow,
                 "execution": execution, "status": "retained", "reason": "native_identity_unverified"}
     intake = app.receive({"raw_base64": base64.b64encode(raw).decode(), "record_id": record,
-                          "workflow_id": workflow, "execution_id": execution}, claim_epoch=epoch)
+                          "workflow_id": workflow, "execution_id": execution}, claim_epoch=epoch,native_proof=proof)
     if app.claimed is not None:
         app.claimed.check(record, workflow, execution, epoch)
+    if business_check:
+        # No customer plan or transport is prepared on this path. The existing JP
+        # core checks the quoted dispatch and its visit, authorization and opt-out.
+        bound={"ok":True,"record_id":record,"workflow":workflow,"execution":execution,"status":"retained"}
+        stamp=data.get("messageTimestamp")
+        if not (str(stamp).isdigit() and cfg["business_not_before"]<=int(stamp)<=time.time()
+                and intake["state"] in ("ready","public_only") and intake["execution"]==execution
+                and sender in addresses):
+            return bound
+        conv=app._check_conversation(intake["conversation"],intake["contact"]);meta=conv["meta"]
+        need(conv.get("status")=="open" and isinstance(conv.get("labels"),list),"human_state_unknown")
+        scope=(app.chat.account,app.chat.inbox,intake["contact"],intake["conversation"])
+        if human_pause(app.db_path,scope,bool(meta.get("assignee") or meta.get("team") or "jp-atendimento-humano" in conv["labels"]),intake["request"]):
+            return bound
+        if business_check=="opt_out":
+            human_pause(app.db_path,scope,True,intake["request"])
+        app.claimed.check(record,workflow,execution,epoch)
+        return {**bound,"status":"business_ready","recipient":sender,"record_epoch":epoch}
     submitted = {k: intake[k] for k in
                  ("request", "record", "account", "inbox", "contact", "conversation", "message", "state")}
     reservation = planner.reserve(submitted)
@@ -363,11 +430,54 @@ def process_channel(raw, record, workflow, execution, epoch, cfg, app, planner, 
                                   "conversation", "message", "mode")})
     else:
         plan = {"status": "held"}
-    return {"ok": True, "record_id": record, "workflow": workflow,
+    if cfg.get("service_cases") and plan.get("service_record"):
+        from service_request import handle,installed
+        stamp=envelope["data"].get("messageTimestamp")
+        need(app.claimed is not None and intake["execution"]==execution,"service_claim_required")
+        if str(stamp).isdigit() and cfg["service_cases"]["not_before"]<=int(stamp)<=time.time():
+            resolve_case,note=installed(cfg["service_cases"])
+            plan=handle(app,held_plan,intake,reservation,lambda:app.claimed.check(record,workflow,execution,epoch),
+                        resolve=resolve_case,team_note=note)
+    result={"ok": True, "record_id": record, "workflow": workflow,
             "execution": execution, "first_execution": intake["execution"],
             "status": "retained", "intake": intake["request"],
             "reservation": reservation.get("reservation"),
             "plan": plan.get("status"), "transport_attempts": 0}
+    if plan.get("service_record"):
+        need(plan["service_record"]==record,"wrong_service_record")
+        result.update(service_record=record,service_state=plan["service_state"])
+    if cfg.get("first_dispatch_socket") and plan.get("status")=="prepared_held":
+        need(app.claimed is not None and intake["execution"]==execution,"first_claim_required")
+        app.claimed.check(record,workflow,execution,epoch)
+        receipt=first_dispatch(cfg["first_dispatch_socket"],dict(record=record,workflow=workflow,
+            execution=execution,epoch=epoch,sender=sender))
+        need(receipt["status"] in ("held","accepted","delivery_unknown","human") and
+             (receipt["status"]=="held" or receipt.get("attempt")==plan["parts"][0]["part_id"]), "invalid_first_response")
+        result.pop("transport_attempts")
+        result["first_part"]=receipt["status"]
+        if receipt["status"]=="accepted":result["status"]="processed"
+    return result
+
+
+def read_claimed_pair(cfg, raw, record, epoch):
+    # Direct LAN mutual TLS. No proxy, redirects, credentials for Evolution, or selectable URL.
+    import ipaddress
+    host = str(ipaddress.IPv4Address(cfg["host"]))
+    need(ipaddress.ip_address(host).is_private and type(cfg["port"]) is int and
+         1024 <= cfg["port"] <= 65535, "invalid_native_reader")
+    tls = ssl.create_default_context(cafile=cfg["server_ca"])
+    tls.minimum_version = ssl.TLSVersion.TLSv1_3
+    tls.load_cert_chain(cfg["client_cert"], cfg["client_key"])
+    connection = http.client.HTTPSConnection(host, cfg["port"], timeout=4, context=tls)
+    try:
+        connection.request("POST", "/v1/claimed-pair", body=raw, headers={
+            "Content-Type": "application/octet-stream", "X-Record-Id":record, "X-Owner-Epoch":epoch})
+        response=connection.getresponse()
+        result=response.read(4097)
+        need(response.status==200 and len(result)<=4096,"native_reader_unavailable")
+        return json.loads(result)
+    finally:
+        connection.close()
 
 
 def serve(config_path):
@@ -424,17 +534,18 @@ def serve(config_path):
             pass
         def do_POST(self):
             try:
-                need(self.path in ("/inbound", "/reserve", "/plan", "/channel-inbound"), "wrong_path")
+                need(self.path in ("/inbound", "/reserve", "/plan", "/channel-inbound", "/business-preflight"), "wrong_path")
                 supplied = self.headers.get("Authorization", "")
                 need(hmac.compare_digest(supplied.encode(), b"Bearer " + token), "unauthorized")
                 size = int(self.headers.get("Content-Length", "0"))
                 need(0 < size <= 1_400_000, "size_limit")
                 body = self.rfile.read(size)
-                if self.path == "/channel-inbound":
+                if self.path in ("/channel-inbound","/business-preflight"):
                     result = process_channel(body, self.headers.get("X-JP-Record-ID"),
                         self.headers.get("X-JP-n8n-workflow-id"),
                         self.headers.get("X-JP-n8n-execution-id"),
-                        self.headers.get("X-JP-Owner-Epoch"), cfg, app, planner, held_plan)
+                        self.headers.get("X-JP-Owner-Epoch"), cfg, app, planner, held_plan,
+                        business_check=(self.headers.get("X-JP-Control-Intent") or "missing") if self.path=="/business-preflight" else False)
                 else:
                     data = json.loads(body)
                     result = (app.receive(data) if self.path == "/inbound" else
@@ -454,5 +565,13 @@ def serve(config_path):
 
 
 if __name__ == "__main__":
-    need(len(sys.argv) == 2, "config_path_required")
-    serve(sys.argv[1])
+    if len(sys.argv)==6 and sys.argv[1]=="release-human":
+        need(os.geteuid()==0 and re.fullmatch(r"[0-9a-f]{32}",sys.argv[5]),"local_operator_required")
+        cfg=json.loads(pathlib.Path(sys.argv[2]).read_bytes())
+        chat=Chatwoot(cfg["account"],cfg["inbox"],cfg["channel"],pathlib.Path(cfg["chatwoot_token_file"]).read_text().strip())
+        intake=Intake(cfg["db_file"],cfg,chat,None,None)
+        need(intake.release_human(int(sys.argv[3]),int(sys.argv[4]),sys.argv[5]) is False,"release_unconfirmed")
+        print(json.dumps({"released":True,"replayed":0}))
+    else:
+        need(len(sys.argv) == 2, "config_path_required")
+        serve(sys.argv[1])

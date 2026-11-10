@@ -30,8 +30,59 @@ def canonical(value):
     return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
 
 
+def human_pause(path, scope, observed, request=None, release_episode=None):
+    """Latch observed ownership. A release applies only to later intake rows."""
+    account,inbox,contact,conversation=scope
+    need(all(type(i) is int and i>0 for i in scope),"invalid_human_scope")
+    uri=Path(path).resolve(strict=True).as_uri()+"?mode=rw"
+    db=sqlite3.connect(uri,uri=True,timeout=3)
+    try:
+        db.execute("BEGIN IMMEDIATE")
+        db.execute("""CREATE TABLE IF NOT EXISTS intake_human_episodes (
+            episode TEXT PRIMARY KEY, account INTEGER NOT NULL,inbox INTEGER NOT NULL,
+            contact INTEGER NOT NULL,conversation INTEGER NOT NULL,release_cut INTEGER)""")
+        db.execute("""CREATE UNIQUE INDEX IF NOT EXISTS intake_human_active ON
+            intake_human_episodes(account,inbox,conversation) WHERE release_cut IS NULL""")
+        where="account=? AND inbox=? AND conversation=?"; key=(account,inbox,conversation)
+        active=db.execute("SELECT episode,contact FROM intake_human_episodes WHERE "+where+
+                          " AND release_cut IS NULL",key).fetchone()
+        if not active and not observed:
+            prior=db.execute("""SELECT 1 FROM intakes WHERE contact=? AND conversation=? AND
+                reason='human_ownership' AND rowid>(SELECT coalesce(max(release_cut),0)
+                FROM intake_human_episodes WHERE account=? AND inbox=? AND contact=? AND conversation=?) LIMIT 1""",
+                (contact,conversation,*scope)).fetchone()
+            observed=bool(prior)
+        if active:need(active[1]==contact,"human_contact_changed")
+        if release_episode is not None:
+            need(not observed and active and active[0]==release_episode,"invalid_human_release")
+            cutoff=db.execute("SELECT coalesce(max(rowid),0) FROM intakes").fetchone()[0]
+            db.execute("UPDATE intake_human_episodes SET release_cut=? WHERE episode=? AND release_cut IS NULL",
+                       (cutoff,release_episode))
+            active=None
+        elif observed and not active:
+            active=(secrets.token_hex(16),contact)
+            db.execute("INSERT INTO intake_human_episodes VALUES(?,?,?,?,?,NULL)",(active[0],*scope))
+        protected=False
+        if request is not None:
+            protected=bool(db.execute("""SELECT 1 FROM intakes i JOIN intake_human_episodes h
+                ON h.account=? AND h.inbox=? AND h.contact=? AND h.conversation=?
+                WHERE i.request=? AND i.rowid<=h.release_cut LIMIT 1""",(*scope,request)).fetchone())
+        db.commit()
+        return bool(active or protected)
+    finally:db.close()
+
+
 def digest(value):
     return hashlib.sha256(canonical(value).encode()).hexdigest()
+
+
+def intake_held(path,scope,request):
+    db=sqlite3.connect(Path(path).resolve(strict=True).as_uri()+"?mode=ro",uri=True,timeout=3)
+    try:
+        return bool(db.execute("""SELECT 1 FROM intake_human_episodes h JOIN intakes i ON i.request=?
+            WHERE h.account=? AND h.inbox=? AND h.contact=? AND h.conversation=? AND
+            (h.release_cut IS NULL OR i.rowid<=h.release_cut) LIMIT 1""",(request,*scope)).fetchone())
+    finally:db.close()
 
 
 def bounded(value, maximum=512):

@@ -9,6 +9,27 @@ from service import App, Stop, message_parts
 from policy import prepare
 
 class Parts(unittest.TestCase):
+    def test_model_capacity_creates_a_private_handoff_only_for_a_definite_refusal(self):
+        with tempfile.TemporaryDirectory() as directory:
+            app=App({"inbox":4,"account":3,"actors":{"A":{"conversation":2,"contact":8}},"hmac":"fixture"},
+                    {},{},pathlib.Path(directory)/"events",directory)
+            req=str(uuid.uuid4())
+            with app.db() as db:
+                db.execute("INSERT INTO events(req,actor,question,options,state,incoming) VALUES(?,'A','Dúvida',?,'claimed',1)",(req,json.dumps({"intent":"auto"})))
+            app.native_owner=lambda actor:None
+            with patch("policy.prepare",return_value=({"category":"chat"},None,None,None)):
+                def refuse(*args):
+                    raise Stop("ai_held_uncertain")
+                app.ai=refuse
+                with self.assertRaisesRegex(Stop,"ai_held_uncertain"):
+                    app.plan(app.row(req))
+                def at_limit(*args):
+                    raise Stop("ai_session_limit")
+                app.ai=at_limit
+                app.step("plan",{"request":req,"incoming":1})
+            self.assertIsNotNone(app.ownership("A"))
+            with app.db() as db:
+                self.assertEqual([tuple(r) for r in db.execute("SELECT private,asset,state FROM parts")],[(1,None,"pending")])
     def test_conversation_hold_survives_restart_and_release_covers_future_only(self):
         cfg={"account":1,"inbox":7,"agent_token":"fixture","actors":{"A":{"conversation":2,"contact":12},"B":{"conversation":3,"contact":13}}}
         def native(port,path,**kw):

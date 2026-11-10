@@ -48,7 +48,7 @@ class FakeChatwoot:
         contact, _ = self.conversations[conversation_id]
         return {"account_id": self.account, "inbox_id": self.inbox, "id": conversation_id,
                 "meta": {"sender": {"id": contact}, "assignee": {"id": 1} if self.assigned else None},
-                "labels": []}
+                "labels": [],"status":"open"}
 
     def incoming(self, source_id, conversation_id, text, request_id):
         self.incoming_calls += 1
@@ -132,6 +132,21 @@ class IngressTest(unittest.TestCase):
         self.assertEqual(self.planner.reserve({k: row[k] for k in
             ("request", "record", "account", "inbox", "contact", "conversation", "message", "state")})["status"], "held")
 
+    def test_unassignment_stays_human_until_exact_release_and_only_future_rows_resume(self):
+        from bridge import Held as GuardHeld, intake_held
+        self.chat.assigned=True
+        old=self.app.receive(self.event(KNOWN,"PAUSEBEFORE"))
+        self.chat.assigned=False
+        pending=self.app.receive(self.event(KNOWN,"PAUSEAFTER"))
+        self.assertEqual((old["reason"],pending["reason"]),("human_ownership","human_ownership"))
+        scope=(self.chat.account,self.chat.inbox,old["contact"],old["conversation"])
+        with self.app.db() as db:
+            episode,=db.execute("SELECT episode FROM intake_human_episodes WHERE release_cut IS NULL").fetchone()
+        with self.assertRaises(GuardHeld):self.app.release_human(*scope[2:],"wrong")
+        self.assertFalse(self.app.release_human(*scope[2:],episode))
+        self.assertTrue(intake_held(self.app.db_path,scope,pending["request"]))
+        self.assertEqual(self.app.receive(self.event(KNOWN,"PAUSEFUTURE"))["state"],"ready")
+
     def test_uncertain_post_is_held_without_retry(self):
         self.chat.fail_incoming = True
         event = self.event(KNOWN)
@@ -186,6 +201,10 @@ class IngressTest(unittest.TestCase):
                                    "remoteJidAlt": NEW}}, INSTANCE, proof)
         with self.assertRaises(Held):
             native_sender({"key": {"fromMe": False, "remoteJid": "123@g.us"}}, INSTANCE, proof)
+        for extra in ({"remoteJid": NEW}, {"remoteJid": "123@g.us"}, {"participant": KNOWN},
+                      {"participantAlt": lid}):
+            with self.assertRaises(Held):
+                native_sender({"key":{"fromMe":False,"remoteJid":KNOWN},**extra}, INSTANCE, proof)
 
     def test_claimed_collector_handoff_keeps_execution_and_never_sends(self):
         lid = "100000001@lid"
@@ -224,6 +243,29 @@ class IngressTest(unittest.TestCase):
         self.assertEqual(self.chat.incoming_calls, 1)
         self.app.bindings = lambda: {**proof, "record_id": "0" * 64}
         self.assertEqual(call("704")["reason"], "native_identity_unverified")
+
+    def test_business_preflight_never_dispatches_and_checks_pause_and_age(self):
+        import time,sqlite3
+        epoch="12345678-1234-1234-1234-123456789abc";wf="sourcewf"
+        self.config.update(channel_epoch=epoch,channel_workflow=wf,native_instance_id_hash=digest(b"fixture-instance"),business_not_before=int(time.time())-5)
+        db=pathlib.Path(self.tmp.name)/"business-queue.db";queue=sqlite3.connect(db)
+        self.addCleanup(queue.close)
+        queue.executescript("CREATE TABLE owner(slot,epoch,fixture);CREATE TABLE receipts(id,state,execution,epoch)")
+        queue.execute("INSERT INTO owner VALUES(1,?,NULL)",(epoch,));queue.commit()
+        claim=ClaimedDirectory(db,wf,epoch,lambda:(5,self.directory),lambda n:self.fail("unexpected lookup"))
+        app=Intake(self.app.db_path,self.config,self.chat,None,None,claimed=claim)
+        def preflight(native,when):
+            packet=json.loads(base64.b64decode(self.event(NEW,native,"OK")["raw_base64"]))
+            packet["data"].update(instanceId="fixture-instance",messageTimestamp=when)
+            raw=json.dumps(packet).encode();rid=receipt_id(INSTANCE,raw)
+            queue.execute("INSERT INTO receipts VALUES(?,'claimed','1',?)",(rid,epoch));queue.commit()
+            return process_channel(raw,rid,wf,"1",epoch,self.config,app,None,None,business_check="confirmed")
+        result=preflight("CONTROL001",int(time.time()))
+        self.assertEqual((result["status"],result["recipient"]),("business_ready",NEW))
+        self.assertEqual(preflight("CONTROL002",1)["status"],"retained")
+        self.chat.assigned=True
+        self.assertEqual(preflight("CONTROL003",int(time.time()))["status"],"retained")
+        self.assertEqual(self.chat.outgoing_calls,0)
 
     def test_reservation_rejects_wrong_chatwoot_ids(self):
         row = self.app.receive(self.event(KNOWN))

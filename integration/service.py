@@ -339,7 +339,16 @@ class App:
         if asset:self.artbytes(asset)
         session=str(uuid.uuid5(uuid.NAMESPACE_URL,"isolated-chatwoot:"+str(self.cfg["inbox"])+":"+row["actor"]))
         trusted=dict(context,local_reply=fixed,local_decision=decision) if fixed else context
-        ai=self.ai({"id":row["req"],"session":session,"text":row["question"],"context":trusted},self.cfg["hmac"].encode())
+        try:
+            ai=self.ai({"id":row["req"],"session":session,"text":row["question"],"context":trusted},self.cfg["hmac"].encode())
+        except Stop as exc:
+            reason=str(exc)
+            if reason not in {"ai_session_limit","ai_budget_limit","ai_monthly_budget_limit"}:
+                raise
+            # The gateway refused before reserving a provider request. Use the existing private handoff.
+            return {"reply":"A equipe precisa responder a esta mensagem. O limite de uso da IA foi atingido.",
+                    "decision":"handoff","provider":{"category":"capacity","reason":reason},
+                    "ai":{"mode":"local","model":None,"tokens":{"input":0,"output":0},"estimate_micro_usd":0,"kb_version":None}},None
         answer=ai["reply"];action=ai["decision"]
         return {"reply":answer,"decision":action,"provider":context,"ai":{k:ai[k] for k in ("model","tokens","estimate_micro_usd","mode","kb_version")}},asset["id"] if asset and action=="answer" else None
     def followup(self,q,options,previous):
