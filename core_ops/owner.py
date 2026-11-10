@@ -5,7 +5,14 @@ from pathlib import Path
 def transition(root,mode,roles,owner,cutover,apply):
     state=root/'ops-state';spec=json.loads((root/'ops-config/manifest.json').read_text());keyfile=root/'ops-config/roles.json'
     secret=json.loads(keyfile.read_text())
-    if secret['owner']!=owner or not set(roles)<=set(spec):raise ValueError('invalid_scope')
+    # The two transport permissions belong to the bound inbound workflow. Neither
+    # is a separate n8n workflow or an independently claimable processing role.
+    permitted=set(spec)
+    inbound=spec.get('inbound',{})
+    if 'inbound' in roles and '/api/n8n/inbound' in inbound.get('nodes',{}).values():
+        permitted.update(('public_first_reply','public_art_continuation'))
+    if secret['owner']!=owner or not set(roles)<=permitted:raise ValueError('invalid_scope')
+    if 'public_art_continuation' in roles and 'public_first_reply' not in roles:raise ValueError('first_reply_required')
     with (state/'lease.lock').open('rb') as lock:
         fcntl.flock(lock,fcntl.LOCK_EX|fcntl.LOCK_NB);p=state/'ownership.json';old=json.loads(p.read_text())
         uncertain=sorted(x.stem for x in (state/'admissions').glob('*.intent') if not x.with_suffix('.done').exists())

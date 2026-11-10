@@ -12,6 +12,7 @@ jobs:
           python3 -m compileall -q core_ops
           python3 core_ops/test_classifier.py
           python3 core_ops/test_observer.py
+          python3 core_ops/test_owner_scope.py
           python3 core_ops/test_task_reads.py
           python3 core_ops/test_effect_source.py
           for source in core_ops/*.mjs; do node --check "$source"; done
