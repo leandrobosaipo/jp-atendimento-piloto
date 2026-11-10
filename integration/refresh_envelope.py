@@ -166,9 +166,9 @@ def execute(args):
     # Hashes stay private; output never contains the session or source response.
     protected = {p: p.read_bytes() for p in (ETC / "assets.json", ETC / "runtime.json", ai, unit)}
     states = {u: run("systemctl", "is-active", u) for u in ("atendimento-piloto-ai.socket", "atendimento-piloto-ai.service")}
-    pre = database_audit(STATE)
+    pre = database_audit(STATE, allow_human_holds=True)
     def invariant():
-        need(database_audit(STATE) == pre, "integration_state_changed")
+        need(database_audit(STATE, allow_human_holds=True) == pre, "integration_state_changed")
         need(all(p.read_bytes() == value for p, value in protected.items()), "protected_files_changed")
         need(all(run("systemctl", "is-active", u) == value for u, value in states.items()), "panel_state_changed")
     def check(expected):

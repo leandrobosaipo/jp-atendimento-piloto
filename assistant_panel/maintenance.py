@@ -36,7 +36,7 @@ def record(path, value):
         json.dump(value, f, sort_keys=True); f.flush(); os.fsync(f.fileno())
 
 
-def database_audit(path, limits=None):
+def database_audit(path, limits=None, *, allow_human_holds=False):
     with closing(sqlite3.connect(f'file:{path}?mode=ro', uri=True)) as db:
         db.execute('BEGIN')
         demand(db.execute('PRAGMA quick_check').fetchone()[0] == 'ok', 'Invalid SQLite database')
@@ -49,7 +49,10 @@ def database_audit(path, limits=None):
                               (limits[name]['count'],) if limits and name in limits else ()).fetchall()
             result[name] = {'count': len(rows), 'sha256': digest(json.dumps(rows, sort_keys=True).encode())}
         if 'events' in names:
-            demand(not db.execute("SELECT 1 FROM events WHERE state!='done' LIMIT 1").fetchone(), 'Unfinished integration events')
+            unfinished = "state!='done'"
+            if allow_human_holds and db.execute("SELECT 1 FROM events WHERE state='human' LIMIT 1").fetchone():
+                unfinished += " AND NOT (state='human' AND coalesce(reason,'')='human_ownership' AND incoming IS NOT NULL)"
+            demand(not db.execute("SELECT 1 FROM events WHERE "+unfinished+" LIMIT 1").fetchone(), 'Unfinished integration events')
         if 'turns' in names:
             demand(not db.execute("SELECT 1 FROM turns WHERE status='pending' LIMIT 1").fetchone(), 'Pending AI request')
         return result

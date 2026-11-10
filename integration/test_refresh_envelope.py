@@ -1,10 +1,11 @@
 """Offline synthetic credential refresh and rollback contracts."""
 import json
 import os
+import sqlite3
 from pathlib import Path
 import tempfile
 import unittest
-from refresh_envelope import build, private, sha, transition, ORIGIN
+from refresh_envelope import build, database_audit, private, sha, transition, ORIGIN
 
 
 class Tests(unittest.TestCase):
@@ -25,6 +26,20 @@ class Tests(unittest.TestCase):
         self.backup = self.root / "archived.json"
 
     def tearDown(self): self.tmp.cleanup()
+
+    def test_refresh_preserves_persisted_human_takeover(self):
+        path=self.root / "events.sqlite3"
+        with sqlite3.connect(path) as db:
+            db.execute("CREATE TABLE events(state TEXT, reason TEXT, incoming INTEGER)")
+            db.execute("INSERT INTO events VALUES('human','human_ownership',10)")
+        self.assertEqual(database_audit(path,allow_human_holds=True)["events"]["count"],1)
+        with self.assertRaises(RuntimeError):
+            database_audit(path)
+        for state,reason,incoming in [("human",None,10),("human","human_ownership",None),("planning","human_ownership",10)]:
+            with sqlite3.connect(path) as db:
+                db.execute("UPDATE events SET state=?,reason=?,incoming=?",(state,reason,incoming))
+            with self.assertRaises(RuntimeError):
+                database_audit(path,allow_human_holds=True)
 
     def test_preserves_all_non_session_fields(self):
         after = json.loads(build(self.old, self.candidate))
