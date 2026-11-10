@@ -1,6 +1,35 @@
 """Plan an ownership window or close admissions and enumerate uncertain calls."""
-import argparse,datetime as dt,fcntl,hashlib,json,os,tempfile,uuid
+import argparse,datetime as dt,fcntl,hashlib,json,os,ssl,subprocess,tempfile,uuid
 from pathlib import Path
+
+def ownership_deadline(proof,now):
+    until=dt.datetime.fromisoformat(proof['until'])
+    if now<until<=now+dt.timedelta(days=1):
+        return until
+    # A regular production handover can last up to its pinned identity certificates.
+    # Rehearsals and temporary handovers retain their short admission window.
+    pins=proof.get('identity_certificates',{})
+    if until<=now or set(pins)!={'client','server'}:
+        raise ValueError('handover_expiry_invalid')
+    side=Path(proof['prepared_side'])
+    if side.resolve()!=side or side.stat().st_uid!=0 or side.stat().st_mode&0o077:
+        raise ValueError('identity_configuration_untrusted')
+    reader=json.loads(side.read_bytes())['native_pair_reader']
+    if reader['client_cert']==reader['server_ca']:
+        raise ValueError('distinct_identities_required')
+    for role,pin in pins.items():
+        path=Path(pin['path'])
+        if str(path)!=reader['client_cert' if role=='client' else 'server_ca']:
+            raise ValueError('identity_certificate_unbound')
+        if not path.is_absolute() or path.resolve()!=path or not path.is_file() or path.stat().st_uid!=0 or path.stat().st_mode&0o022:
+            raise ValueError('identity_certificate_untrusted')
+        if hashlib.sha256(path.read_bytes()).hexdigest()!=pin['sha256']:
+            raise ValueError('identity_certificate_changed')
+        result=subprocess.check_output(['openssl','x509','-in',str(path),'-noout','-enddate'],text=True,timeout=5)
+        expires=dt.datetime.fromtimestamp(ssl.cert_time_to_seconds(result.strip().removeprefix('notAfter=')),dt.timezone.utc)
+        if until>expires:
+            raise ValueError('handover_outlasts_identity')
+    return until
 
 def transition(root,mode,roles,owner,cutover,apply):
     state=root/'ops-state';spec=json.loads((root/'ops-config/manifest.json').read_text());keyfile=root/'ops-config/roles.json'
@@ -24,8 +53,7 @@ def transition(root,mode,roles,owner,cutover,apply):
                 expected=hashlib.sha256((root/'ops-config/manifest.json').read_bytes()).hexdigest()
                 if cutover.stat().st_uid!=0 or cutover.stat().st_mode&0o077 or proof.get('manifest_sha256')!=expected or proof.get('owner')!=owner or set(proof.get('roles',[]))!=set(roles):raise ValueError('ownership_evidence_required')
                 if not all(proof.get(k) is True for k in ['source_clocks_fenced','source_writers_drained','receiver_owner_verified','queues_reconciled','state_restore_verified']):raise ValueError('handover_incomplete')
-                until=dt.datetime.fromisoformat(proof['until'])
-                if not now<until<=now+dt.timedelta(days=1):raise ValueError('handover_expiry_invalid')
+                until=ownership_deadline(proof,now)
             else:until=now+dt.timedelta(minutes=15)
         else:roles=[];until=now;epoch=old.get('epoch',epoch)
         target={'mode':mode,'epoch':epoch,'owner':owner,'roles':sorted(set(roles)),'until':until.isoformat()}
