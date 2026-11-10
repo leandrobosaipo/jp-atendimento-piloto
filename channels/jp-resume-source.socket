@@ -1,0 +1,13 @@
+[Unit]
+Description=Consulta privada da conversa da JP antes de continuar a resposta
+
+[Socket]
+ListenStream=/run/jp-resume-source/chat.sock
+SocketUser=root
+SocketGroup=root
+SocketMode=0600
+DirectoryMode=0700
+RemoveOnStop=yes
+
+[Install]
+WantedBy=sockets.target
