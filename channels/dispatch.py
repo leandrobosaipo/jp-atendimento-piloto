@@ -29,8 +29,8 @@ class Dispatcher:
                 CREATE INDEX IF NOT EXISTS dispatch_usage ON dispatch_attempts(attempted);
                 CREATE INDEX IF NOT EXISTS dispatch_pending ON dispatch_attempts(destination,state);
                 CREATE TABLE IF NOT EXISTS dispatch_content (attempt TEXT PRIMARY KEY, content_hash TEXT NOT NULL);
-                CREATE TABLE IF NOT EXISTS dispatch_receipts (record TEXT PRIMARY KEY, echo TEXT NOT NULL,
-                    attempt TEXT NOT NULL, state TEXT NOT NULL);
+                CREATE TABLE IF NOT EXISTS dispatch_receipts (record TEXT NOT NULL, echo TEXT NOT NULL,
+                    attempt TEXT NOT NULL, state TEXT NOT NULL, PRIMARY KEY(record,attempt));
                 CREATE TABLE IF NOT EXISTS dispatch_baseline (
                     id TEXT PRIMARY KEY, attempted INTEGER NOT NULL, weight INTEGER NOT NULL CHECK(weight>0));
                 CREATE INDEX IF NOT EXISTS dispatch_baseline_usage ON dispatch_baseline(attempted);
@@ -135,7 +135,7 @@ class Dispatcher:
             state="read" if "read" in (row["state"],proof["state"]) else "delivered"
             if "record" in proof:
                 db.execute("INSERT OR IGNORE INTO dispatch_receipts VALUES(?,?,?,?)",(proof["record"],proof["echo"],row["attempt"],proof["state"]))
-                prior=db.execute("SELECT echo,attempt,state FROM dispatch_receipts WHERE record=?",(proof["record"],)).fetchone()
+                prior=db.execute("SELECT echo,attempt,state FROM dispatch_receipts WHERE record=? AND attempt=?",(proof["record"],row["attempt"])).fetchone()
                 need(tuple(prior)==(proof["echo"],row["attempt"],proof["state"]),"receipt_record_conflict")
             db.execute("UPDATE dispatch_attempts SET state=? WHERE attempt=?",(state,row["attempt"]))
             return state
