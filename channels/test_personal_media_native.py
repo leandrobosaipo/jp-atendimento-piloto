@@ -6,6 +6,7 @@ import json
 from pathlib import Path
 import tempfile
 import unittest
+import uuid
 
 from bridge import Held, Outbox
 from personal import INSTANCE, ORIGIN
@@ -264,6 +265,38 @@ class NativeSequenceTest(unittest.TestCase):
         with self.assertRaises(Held):
             self.sequence.advance(key)
         self.assertEqual(len([r for r in self.http.requests if r[1].startswith("message/")]), 2)
+
+    def test_direct_recipient_confirmation_unlocks_only_personal_jpeg(self):
+        key, _ = self.sequence.start(self.inbound(), ["Aqui está a tabela de serviços."],
+                                     image_group="servicos", choose=lambda rows: rows[0])
+        self.sequence.advance(key)
+        with self.assertRaises(Held):
+            self.sequence.advance_after_recipient_confirmation(key)
+        with self.box.db() as db:
+            accepted = json.loads(db.execute("SELECT receipt FROM channel_parts WHERE event_key=? AND position=1",
+                                             (key,)).fetchone()[0])
+        source_hash = hashlib.sha256("inbound-001".encode()).hexdigest()
+        confirmation = {"status": "recipient_confirmed", "source": "recipient_direct_chat", "position": 1,
+                        "request": str(uuid.uuid5(uuid.NAMESPACE_URL, "jp-personal-inbound:" + source_hash)),
+                        "native_id": "accepted-01", "request_sha256": accepted["request_sha256"],
+                        "question_sha256": hashlib.sha256("Mensagem fictícia".encode()).hexdigest(),
+                        "response_sha256": hashlib.sha256("Aqui está a tabela de serviços.".encode()).hexdigest(),
+                        "confirmation_sha256": hashlib.sha256("Recebi só o texto".encode()).hexdigest(),
+                        "confirmed_at": "2026-11-10T12:01:00Z"}
+        with self.assertRaises(Held):
+            self.sequence.record_recipient_confirmation(key, {**confirmation, "response_sha256": "0" * 64})
+        self.assertEqual(self.sequence.record_recipient_confirmation(key, confirmation)["provider_state"],
+                         "accepted_not_delivered")
+        with self.box.db() as db:
+            self.assertEqual(db.execute("SELECT state FROM channel_parts WHERE event_key=? AND position=1",
+                                        (key,)).fetchone()[0], "accepted")
+        with self.assertRaises(Held):
+            self.sequence.record_recipient_confirmation(key, confirmation)
+        self.assertEqual(self.sequence.advance_after_recipient_confirmation(key)["position"], 2)
+        with self.assertRaises(Held):
+            self.sequence.advance_after_recipient_confirmation(key)
+        self.assertEqual([r[1] for r in self.http.requests if r[1].startswith("message/")],
+                         ["message/sendText", "message/sendMedia"])
 
 
 if __name__ == "__main__":
