@@ -36,6 +36,7 @@ jobs:
           python3 channels/test_dispatch_contract.py
           python3 -B channels/test_customer_identity.py
           sudo unshare --net -- setpriv --reuid="$(id -u)" --regid="$(id -g)" --clear-groups --no-new-privs env -i PATH=/usr/bin:/bin python3 -B integration/test_customer_ingress.py
+          sudo unshare --net -- setpriv --reuid="$(id -u)" --regid="$(id -g)" --clear-groups --no-new-privs env -i PATH=/usr/bin:/bin python3 -B integration/test_customer_plan.py
           sudo unshare --net -- setpriv --reuid="$(id -u)" --regid="$(id -g)" --clear-groups --no-new-privs env -i PATH=/usr/bin:/bin python3 -B channels/test_dispatch.py
           node --check assistant_panel/cockpit/panel.js
           node --check integration/cockpit/app.js
