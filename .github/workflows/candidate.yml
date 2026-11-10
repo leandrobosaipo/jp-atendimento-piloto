@@ -1,7 +1,7 @@
 name: Validate offline JP candidate
 on:
   push:
-    paths: ['channels/**', 'business/**', 'operations/**', '.github/workflows/candidate.yml']
+    paths: ['channels/**', 'business/**', 'operations/**', 'integration/**', '.github/workflows/candidate.yml']
   workflow_dispatch:
 permissions: {contents: read}
 jobs:
@@ -28,5 +28,6 @@ jobs:
           python3 integration/test_provider.py
           python3 integration/test_policy.py
           python3 integration/test_parts.py
+          python3 integration/test_personal_intake.py
           node --check assistant_panel/cockpit/panel.js
           node --check integration/cockpit/app.js

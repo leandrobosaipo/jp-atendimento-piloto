@@ -4,6 +4,7 @@ import base64, datetime as dt, hashlib, hmac, http.server, io, json, os, pathlib
 from zoneinfo import ZoneInfo
 import provider
 import fcntl
+import struct
 from contextlib import contextmanager
 
 HERE=pathlib.Path(__file__).resolve().parent
@@ -236,6 +237,7 @@ class App:
         return q
     def ui(self,msg):
         op=msg.get("op")
+        need(msg.get("actor") != "personal-test","reserved_actor")
         if op=="ask":return self.submit(msg)
         if op=="status":return self.status(uid(msg.get("request")))
         if op=="asset":
@@ -288,11 +290,32 @@ class Screen(socketserver.StreamRequestHandler):
         self.connection.settimeout(8)
         try:
             raw=self.rfile.readline(4097);need(len(raw)<=4096 and raw.endswith(b"\n"),"oversize")
-            result=self.server.app.ui(json.loads(raw))
+            msg=json.loads(raw)
+            if msg.get("op")=="personal-ingress":
+                peer=self.connection.getsockopt(socket.SOL_SOCKET,socket.SO_PEERCRED,struct.calcsize("3i"))
+                result=personal_ingress(self.server.app,msg,struct.unpack("3i",peer)[1])
+            else:
+                result=self.server.app.ui(msg)
         except Exception as e:result={"status":"error","code":str(e) if isinstance(e,Stop) else "unavailable"}
         self.wfile.write(json.dumps(result,ensure_ascii=False).encode()+b"\n")
 class Unix(socketserver.ThreadingUnixStreamServer):
     daemon_threads=True
+
+def personal_ingress(app,msg,peer_uid):
+    # Authentication of the original encrypted record and personal JID belong to the root reader.
+    need(peer_uid==0 and "personal-test" in app.cfg["actors"],"denied")
+    need(set(msg)=={"op","native_id_sha256","record_id","text"},"invalid_personal_event")
+    for field in ("record_id","native_id_sha256"):
+        need(isinstance(msg[field],str) and re.fullmatch("[a-f0-9]{64}",msg[field]),"invalid_record_identity")
+    text=msg["text"]
+    need(isinstance(text,str) and normals(text.strip().rstrip(".!?"))=="marcelinho, quero ver a tabela de precos do piloto","unexpected_personal_request")
+    rid=str(uuid.uuid5(uuid.NAMESPACE_URL,"jp-personal-inbound:"+msg["native_id_sha256"]))
+    with app.db() as conn:
+        conn.execute("CREATE TABLE IF NOT EXISTS personal_intake (slot INTEGER PRIMARY KEY CHECK(slot=1),req TEXT NOT NULL,original_record TEXT NOT NULL)")
+        conn.execute("INSERT OR IGNORE INTO personal_intake VALUES(1,?,?)",(rid,msg["record_id"]))
+        need(conn.execute("SELECT req FROM personal_intake WHERE slot=1").fetchone()[0]==rid,"personal_slot_used")
+    return app.submit({"actor":"personal-test","text":text,"request":rid,"intent":"services_art"})
+
 def serve():
     os.umask(0o077);cred=pathlib.Path(os.environ["CREDENTIALS_DIRECTORY"])
     cfg=json.loads((cred/"runtime").read_bytes());manifest=json.loads((cred/"manifest").read_bytes());prov=json.loads((cred/"appbarber").read_bytes())
