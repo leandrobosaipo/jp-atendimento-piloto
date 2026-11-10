@@ -1,14 +1,17 @@
-"""Isolated collector-to-Chatwoot intake. There is deliberately no send operation."""
+"""Collector-to-Chatwoot intake with an optional handoff to the fenced dispatcher."""
 import base64
-from contextlib import contextmanager
+from contextlib import closing, contextmanager
 import hashlib
 import hmac
+import http.client
 import http.server
 import json
 import os
 import pathlib
 import re
+import socket
 import sqlite3
+import struct
 import sys
 import urllib.parse
 import urllib.request
@@ -195,10 +198,11 @@ class Intake:
         cfg = self.cfg
         key = data["key"]
         addresses = (key.get("remoteJid"), key.get("remoteJidAlt"), data.get("remoteJidAlt"))
-        if self.claimed is not None and all(a is None or isinstance(a,str) and PN.fullmatch(a) for a in addresses):
+        if self.claimed is not None:
             instance_id = data.get("instanceId")
             need(isinstance(instance_id, str) and instance_id and
                  digest(instance_id.encode()) == cfg["native_instance_id_hash"], "native_instance_identity_changed")
+        if self.claimed is not None and all(a is None or isinstance(a,str) and PN.fullmatch(a) for a in addresses):
             proof = {"instance":cfg["instance"], "instance_id_hash":cfg["native_instance_id_hash"],
                      "epoch":cfg["channel_epoch"], "record_id":record, "paused":False, "forward":{}, "reverse":{}}
         else:
@@ -329,8 +333,26 @@ class Intake:
             raise
 
 
+def first_dispatch(path, record):
+    with socket.socket(socket.AF_UNIX,socket.SOCK_STREAM) as sock:
+        sock.settimeout(35)
+        sock.connect(path)
+        peer=sock.getsockopt(socket.SOL_SOCKET,socket.SO_PEERCRED,struct.calcsize("3i"))
+        need(struct.unpack("3i",peer)[1]==0,"unexpected_dispatcher_uid")
+        with closing(http.client.HTTPConnection("localhost")) as client:
+            client.sock=sock
+            client.request("POST","/first-record",json.dumps(record).encode(),{"Content-Type":"application/json"})
+            response=client.getresponse()
+            raw=response.read(1025)
+            need(len(raw)<=1024 and response.status in (200,409),"first_outcome_unknown")
+            result=json.loads(raw)
+            if response.status==409:
+                need(result=={"status":"held"},"invalid_first_response")
+            return result
+
+
 def process_channel(raw, record, workflow, execution, epoch, cfg, app, planner, held_plan):
-    """Consume one verified collector handoff; every prepared part stays held."""
+    """Consume one verified collector handoff and retain the same execution throughout."""
     need(cfg.get("channel_epoch") == epoch and cfg.get("channel_workflow") == workflow and
          isinstance(execution, str) and re.fullmatch(r"[0-9]{1,20}", execution) and
          isinstance(record, str) and re.fullmatch(r"[0-9a-f]{64}", record) and
@@ -345,7 +367,7 @@ def process_channel(raw, record, workflow, execution, epoch, cfg, app, planner, 
         need(envelope.get("instance") == cfg["instance"] and
              str(envelope.get("event", "")).lower().replace("_", ".") == "messages.upsert",
              "channel_event_invalid")
-        app.channel_sender(envelope["data"], record)
+        sender=app.channel_sender(envelope["data"], record)
     except (Held, ValueError, KeyError, TypeError):
         # The encrypted collector record remains the durable review source.
         return {"ok": True, "record_id": record, "workflow": workflow,
@@ -363,11 +385,22 @@ def process_channel(raw, record, workflow, execution, epoch, cfg, app, planner, 
                                   "conversation", "message", "mode")})
     else:
         plan = {"status": "held"}
-    return {"ok": True, "record_id": record, "workflow": workflow,
+    result={"ok": True, "record_id": record, "workflow": workflow,
             "execution": execution, "first_execution": intake["execution"],
             "status": "retained", "intake": intake["request"],
             "reservation": reservation.get("reservation"),
             "plan": plan.get("status"), "transport_attempts": 0}
+    if cfg.get("first_dispatch_socket") and plan.get("status")=="prepared_held":
+        need(app.claimed is not None and intake["execution"]==execution,"first_claim_required")
+        app.claimed.check(record,workflow,execution,epoch)
+        receipt=first_dispatch(cfg["first_dispatch_socket"],dict(record=record,workflow=workflow,
+            execution=execution,epoch=epoch,sender=sender))
+        need(receipt["status"] in ("held","accepted","delivery_unknown","human") and
+             (receipt["status"]=="held" or receipt.get("attempt")==plan["parts"][0]["part_id"]), "invalid_first_response")
+        result.pop("transport_attempts")
+        result["first_part"]=receipt["status"]
+        if receipt["status"]=="accepted":result["status"]="processed"
+    return result
 
 
 def serve(config_path):

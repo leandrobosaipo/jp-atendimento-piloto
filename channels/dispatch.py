@@ -33,6 +33,7 @@ class Dispatcher:
                 CREATE TABLE IF NOT EXISTS dispatch_next_grants (
                     first TEXT PRIMARY KEY, next TEXT UNIQUE NOT NULL, payload_hash TEXT NOT NULL, until INTEGER NOT NULL);
                 CREATE TABLE IF NOT EXISTS dispatch_resume_holds (next TEXT PRIMARY KEY, reason TEXT NOT NULL);
+                CREATE TABLE IF NOT EXISTS dispatch_first_holds (attempt TEXT PRIMARY KEY);
                 CREATE TABLE IF NOT EXISTS dispatch_observations (
                     attempt TEXT NOT NULL, kind TEXT NOT NULL CHECK(kind IN ('echo','delivered','read')),
                     record TEXT NOT NULL, PRIMARY KEY(attempt,kind));
@@ -104,6 +105,8 @@ class Dispatcher:
                 submitted=payload["number"]
                 jid=self.verify_number(submitted,jid)
                 need(isinstance(jid,str),"unverified_native_identity")
+                if grant.get("require_exact_recipient"):
+                    need(jid==grant["destination_jid"],"native_sender_changed")
                 recipient_binding(submitted,jid)
                 db.execute("BEGIN IMMEDIATE")
                 pending=db.execute("SELECT 1 FROM dispatch_attempts WHERE destination=? AND state IN ('sending','unknown','accepted') LIMIT 1",(jid,)).fetchone()
