@@ -133,7 +133,7 @@ class DeliveryTests(unittest.TestCase):
 
     def test_peer_proof_role_and_expiry(self):
         uid = os.getuid()
-        policy = Policy(self.path, self.path, uid, uid)
+        policy = Policy(self.path, self.path, uid, uid, os.getgid())
         body = self.body()
         def save(name,data):
             path = self.path / name
@@ -148,6 +148,9 @@ class DeliveryTests(unittest.TestCase):
         proof = {k:body[k] for k in ("instance","workflow","node","operation","execution","source_event_id","attempt_id")}
         proof.update(epoch=self.epoch,until=self.now+30,destination_jid=self.jid,payload_sha256=digest(body["payload"]))
         save(name,proof)
+        with self.assertRaises(Held):
+            policy.authorize(body,self.epoch,self.now)
+        (self.path/"ownership.json").chmod(0o440)
         self.assertEqual(policy.authorize(body,self.epoch,self.now)["limits"]["minute"],5)
         with self.assertRaises(Held):
             policy.roles(uid+1)

@@ -26,7 +26,7 @@ CORE_UID = 64681
 MAX_REQUEST = 25 * 1024 * 1024
 
 
-def read_private(path, uid):
+def read_private(path, uid, *, mode=0o600, gid=None):
     """Walk directory FDs without following symlinks, including parent components."""
     directory = os.open("/", os.O_RDONLY | os.O_DIRECTORY)
     try:
@@ -38,7 +38,7 @@ def read_private(path, uid):
         with os.fdopen(fd, "rb") as stream:
             info = os.fstat(fd)
             need(stat.S_ISREG(info.st_mode) and info.st_uid == uid and info.st_nlink == 1 and
-                 stat.S_IMODE(info.st_mode) == 0o600, "unsafe_proof_file")
+                 stat.S_IMODE(info.st_mode) == mode and (gid is None or info.st_gid == gid), "unsafe_proof_file")
             data = stream.read(65537)
             need(len(data) <= 65536, "proof_too_large")
             return json.loads(data)
@@ -47,11 +47,12 @@ def read_private(path, uid):
 
 
 class Policy:
-    def __init__(self, config=CONFIG, ops=OPS, admin_uid=0, core_uid=CORE_UID):
+    def __init__(self, config=CONFIG, ops=OPS, admin_uid=0, core_uid=CORE_UID, core_gid=CORE_UID):
         self.config = config
         self.ops = ops
         self.admin_uid = admin_uid
         self.core_uid = core_uid
+        self.core_gid = core_gid
 
     def policy(self):
         return read_private(self.config / "policy.json", self.admin_uid)
@@ -63,7 +64,7 @@ class Policy:
 
     def authorize(self, body, epoch, now):
         policy = self.policy()
-        ownership = read_private(self.ops / "ownership.json", self.core_uid)
+        ownership = read_private(self.ops / "ownership.json", self.admin_uid, mode=0o440, gid=self.core_gid)
         expiry = dt.datetime.fromisoformat(ownership["until"])
         need(ownership["mode"] == policy["mode"] == "owned" and ownership["owner"] == "central-dell" and
              str(UUID(epoch)) == epoch == ownership["epoch"] == policy["epoch"] and
