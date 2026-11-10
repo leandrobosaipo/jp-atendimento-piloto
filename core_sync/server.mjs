@@ -17,6 +17,7 @@ const appEnv={...roles,JP_N8N_STAGE_MODE:"1",JP_N8N_STAGE_AGENDA_WRITE_ENABLED:"
  JP_APPBARBER_RENEWAL_WORKER_TOKEN:cfg.worker,JP_JOBS_N8N_CONFIG_FILE:"/config/jobs.json",CORE_MANUAL_HOOK:cfg.manualHook,JP_N8N_MANUAL_WEBHOOK_URL:cfg.relayHook,
  TZ:"America/Cuiaba"};
 const inner="http://127.0.0.1:8792";
+let renewalExecution=null;
 const proc=spawn(process.execPath,["--import","/app/transport.mjs","/legacy/scripts/jp-evolution-local-api.mjs"],{env:appEnv,stdio:"ignore"});
 proc.once("exit",()=>process.exit(1));
 process.once("SIGTERM",()=>{proc.kill("SIGTERM");process.exit(0);});
@@ -29,7 +30,8 @@ const worker=createWorkerHttpServer({token:cfg.worker,host:"127.0.0.1",port:8795
  if(job&&["requested","authenticating","validating","awaiting_human","awaiting_sync","synchronizing"].includes(job.status)){
    const actionPath="/state/renewal-intents/"+job.job_id+".json";
    assert(/^[a-f0-9-]{36}$/.test(job.job_id));
-   try{fs.writeFileSync(actionPath,JSON.stringify({job:job.job_id,stage:job.status,observed_at:new Date().toISOString()}),{mode:0o600,flag:"wx",flush:true});}
+   assert(/^\d{1,20}$/.test(renewalExecution||""));
+   try{fs.writeFileSync(actionPath,JSON.stringify({job:job.job_id,stage:job.status,execution:renewalExecution,observed_at:new Date().toISOString()}),{mode:0o600,flag:"wx",flush:true});}
    catch(e){if(e.code!=="EEXIST")throw e;}
    return {ok:true,status:"awaiting_human",reason_code:"controlled_renewal_required"};
  }
@@ -68,6 +70,7 @@ const handler=async(req,res)=>{
   const marker="/state/admissions/"+exec+"-"+path.split("/").at(-1)+".json";
   const fd=fs.openSync(marker,"wx",0o600);
   try{fs.writeSync(fd,JSON.stringify({phase:"started",path,workflow:id,execution:exec}));fs.fsyncSync(fd);}finally{fs.closeSync(fd);}
+  if(path==="/api/n8n/stages/renewal-run")renewalExecution=exec;
   const r=await fetch(inner+path,{method:"POST",headers:{"Content-Type":"application/json","Authorization":"Bearer "+cfg.scheduler,"X-JP-n8n-workflow-id":id,"X-JP-n8n-execution-id":exec},body:JSON.stringify(body),signal:AbortSignal.timeout(600000)});
   const obj=await r.json();
   const safe={ok:obj.ok===true,status:obj.status||null,job_id:obj.job_id||null,duplicate:obj.duplicate===true,
@@ -75,6 +78,6 @@ const handler=async(req,res)=>{
   fs.writeFileSync(marker+".done",JSON.stringify({http:r.status,at:new Date().toISOString(),result:safe}),{flag:"wx",mode:0o600});
   return send(r.status,path==="/api/n8n/manual"?{status:obj.status||r.status,body:{ok:obj.body?.ok===true}}:safe);
  }catch{return send(409,{ok:false,reason:"held_or_previously_admitted"});}
- finally{busy.delete(path);}
+ finally{if(path==="/api/n8n/stages/renewal-run")renewalExecution=null;busy.delete(path);}
 };
 const api=http.createServer(handler);api.listen(8791,"0.0.0.0");

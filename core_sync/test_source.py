@@ -1,10 +1,26 @@
 import datetime as dt
 import unittest
 import tempfile
+import json
+from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import patch
 from renewal_lease import reserve
+from rearm_worker import replace_config
 from source import AGENDA,CLIENTS,HISTORY,SERVICES,CALENDAR,allowed
 
 class Contract(unittest.TestCase):
+    def test_rearm_preserves_worker_group_read(self):
+        with tempfile.TemporaryDirectory() as temp:
+            f=Path(temp)/'config.json';f.write_text('{}');f.chmod(0o440)
+            info=SimpleNamespace(st_mode=0o100440,st_uid=0,st_gid=781)
+            with patch.object(Path,'lstat',return_value=info),patch('os.fchown') as owner:
+                replace_config(f,{'generation':3})
+                self.assertEqual(owner.call_args.args[1:],(0,781))
+            self.assertEqual(f.stat().st_mode&0o777,0o440)
+            self.assertEqual(json.loads(f.read_bytes()),{'generation':3})
+            f.chmod(0o600)
+            with self.assertRaisesRegex(ValueError,'unexpected_private_config_acl'):replace_config(f,{})
     def test_one_native_recovery_per_generation(self):
         now=dt.datetime.now(dt.timezone.utc);old=now-dt.timedelta(hours=1)
         jid='3fb76cf0-2830-4a1e-9fe5-794d9681f26a'
