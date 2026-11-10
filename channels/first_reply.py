@@ -43,13 +43,23 @@ def prepare_first(cfg, request, read_record, conversation, image_bytes, now):
     reservation = one(rows(cfg["reservations"], "SELECT * FROM reservations WHERE request=? AND record=? AND state='reserved'",
                            (intake["request"], record)))
     parts = rows(cfg["plans"], "SELECT * FROM held_parts WHERE reservation=? ORDER BY position", (reservation["reservation"],))
-    need([p["position"] for p in parts] == [1,2] and all(p["state"] == "held_before_transport" and
+    need([p["position"] for p in parts] in ([1],[1,2]) and all(p["state"] == "held_before_transport" and
          sha(p["content"].encode()) == p["content_sha256"] for p in parts), "invalid_first_plan")
-    text, art = parts
+    text=parts[0];art=parts[1] if len(parts)==2 else None
+    if art is None:
+        decision=one(rows(cfg["plans"],"""SELECT d.proof FROM service_decisions d JOIN service_requests s ON s.record=d.record
+            WHERE s.record=? AND s.reservation=? AND s.state='answer_prepared' AND d.decision='answer' AND d.part=? AND d.request=?""",
+            (record,reservation["reservation"],text["part_id"],intake["request"])))
+        import json
+        resolved=json.loads(decision["proof"])
+        need(resolved["reply"]==text["content"] and resolved["action"]=="answer","service_answer_changed")
+        if resolved["evidence"]=="official_availability":
+            observed=datetime.fromisoformat(resolved["observed_at"]).timestamp()
+            need(0<=now-observed<=120 and resolved["booking_performed"] is False,"availability_expired")
     ids = (cfg["account"], cfg["inbox"], intake["contact"], intake["conversation"], intake["message"])
     need(all(tuple(row[k] for k in ("account","inbox","contact","conversation","message")) == ids
              for row in [reservation,*parts]) and reservation["text_hash"] == intake["text_hash"] and
-         not text["asset_id"] and text["part_id"] != art["part_id"], "first_plan_binding_changed")
+         not text["asset_id"] and (art is None or text["part_id"] != art["part_id"]), "first_plan_binding_changed")
     contact = one(rows(cfg["intakes"], "SELECT * FROM contacts WHERE address_hash=? AND state='ready'", (address,)))
     need((contact["contact"], contact["conversation"]) == ids[2:4], "first_contact_changed")
 
@@ -63,13 +73,14 @@ def prepare_first(cfg, request, read_record, conversation, image_bytes, now):
         observed=bool(meta.get("assignee") or meta.get("team") or "jp-atendimento-humano" in conv["labels"])
         need(not observed and not intake_held(cfg["intakes"],ids[:4],intake["request"]),"human_ownership")
 
-    image = image_bytes(art["asset_id"], art["asset_sha256"])
-    need(sha(image) == art["asset_sha256"] and image.startswith(b"\xff\xd8") and image.endswith(b"\xff\xd9"), "approved_art_changed")
     number = sender.split("@")[0]
-    media = dict(number=number,mediatype="image",mimetype="image/jpeg",fileName="tabela.jpg",caption=art["content"],
-                 media=base64.b64encode(image).decode())
     body = dict(instance=INSTANCE, workflow=cfg["workflow"], execution=execution, node=cfg["node"], operation="sendText",
                 native_path="/message/sendText/"+INSTANCE, source_event_id=reservation["reservation"], attempt_id=text["part_id"],
                 payload={"number":number, "text":text["content"]})
-    next_part = {"id":art["part_id"], "payload_sha256":digest(media)}
+    next_part=None
+    if art:
+        image = image_bytes(art["asset_id"], art["asset_sha256"])
+        need(sha(image) == art["asset_sha256"] and image.startswith(b"\xff\xd8") and image.endswith(b"\xff\xd9"), "approved_art_changed")
+        media=dict(number=number,mediatype="image",mimetype="image/jpeg",fileName="tabela.jpg",caption=art["content"],media=base64.b64encode(image).decode())
+        next_part={"id":art["part_id"], "payload_sha256":digest(media)}
     return body, next_part, human_free

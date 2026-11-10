@@ -409,6 +409,15 @@ def process_channel(raw, record, workflow, execution, epoch, cfg, app, planner, 
                                   "conversation", "message", "mode")})
     else:
         plan = {"status": "held"}
+    if cfg.get("service_cases") and plan.get("service_record"):
+        from service_request import handle,installed
+        import time
+        stamp=envelope["data"].get("messageTimestamp")
+        need(app.claimed is not None and intake["execution"]==execution,"service_claim_required")
+        if str(stamp).isdigit() and cfg["service_cases"]["not_before"]<=int(stamp)<=time.time():
+            resolve_case,note=installed(cfg["service_cases"])
+            plan=handle(app,held_plan,intake,reservation,lambda:app.claimed.check(record,workflow,execution,epoch),
+                        resolve=resolve_case,team_note=note)
     result={"ok": True, "record_id": record, "workflow": workflow,
             "execution": execution, "first_execution": intake["execution"],
             "status": "retained", "intake": intake["request"],
