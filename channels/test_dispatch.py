@@ -247,6 +247,14 @@ class DeliveryTests(unittest.TestCase):
         with self.assertRaises(Held):
             policy.authorize(body,self.epoch,self.now)
         (self.path/"ownership.json").chmod(0o440)
+        with self.assertRaises(Held):
+            policy.receipt_peer(65534)
+        owned=policy.policy()
+        save("policy.json",{**owned,"receipt_receiver_uid":65534})
+        policy.receipt_peer(65534)
+        with self.assertRaises(Held):
+            policy.roles(65534)
+        save("policy.json",owned)
         self.assertEqual(policy.authorize(body,self.epoch,self.now)["limits"]["minute"],5)
         with self.assertRaises(Held):
             policy.roles(uid+1)

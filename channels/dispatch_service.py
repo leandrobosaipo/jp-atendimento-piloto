@@ -146,6 +146,18 @@ class Policy:
         need(uid == self.core_uid and policy["mode"] == "owned", "peer_or_sender_disabled")
         return {(p["workflow"], p["node"], p["operation"]) for p in policy["roles"]}
 
+    def receipt_peer(self, uid):
+        if uid == self.core_uid:
+            self.roles(uid)
+            return
+        policy = self.policy()
+        need(uid == 65534 and policy.get("receipt_receiver_uid") == uid and policy["mode"] == "owned",
+             "receipt_peer_disabled")
+        ownership = read_private(self.ops/"ownership.json",self.admin_uid,mode=0o440,gid=self.core_gid)
+        expiry = dt.datetime.fromisoformat(ownership["until"])
+        need(ownership["mode"]=="owned" and ownership["owner"]=="central-dell" and
+             ownership["epoch"]==policy["epoch"] and expiry>dt.datetime.now(dt.timezone.utc),"receipt_owner_disabled")
+
     def authorize(self, body, epoch, now):
         policy = self.policy()
         ownership = read_private(self.ops / "ownership.json", self.admin_uid, mode=0o440, gid=self.core_gid)
@@ -207,7 +219,11 @@ class Handler(BaseHTTPRequestHandler):
         try:
             need(self.path in ("/deliver","/receipt","/receipt-event"), "unknown_path")
             peer = self.connection.getsockopt(socket.SOL_SOCKET, socket.SO_PEERCRED, struct.calcsize("3i"))
-            roles = self.server.policy.roles(struct.unpack("3i", peer)[1])
+            uid = struct.unpack("3i", peer)[1]
+            if self.path == "/receipt-event":
+                self.server.policy.receipt_peer(uid)
+            else:
+                roles = self.server.policy.roles(uid)
             lengths = self.headers.get_all("Content-Length", [])
             need(len(lengths) == 1 and re.fullmatch(r"[1-9][0-9]{0,7}", lengths[0]) and
                  not self.headers.get_all("Transfer-Encoding") and self.headers.get_content_type() == "application/json",
