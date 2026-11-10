@@ -1,0 +1,28 @@
+name: Isolated renewal
+on:
+  push:
+    branches: ['codex/appbarber-renovacao-dell-isolada-20261110']
+  workflow_dispatch:
+permissions: {contents: read}
+jobs:
+  renewal:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+      - run: |
+          node renewal/test.mjs
+          docker build -t isolated-renewal:candidate renewal
+          sudo python3 renewal/fixture.py isolated-renewal:candidate
+          docker save isolated-renewal:candidate | gzip -1 > renewal-image.tar.gz
+          docker image inspect --format '{{.Id}}' isolated-renewal:candidate > image-id
+          sha256sum renewal-image.tar.gz > SHA256SUMS
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: isolated-renewal-linux-amd64
+          path: |
+            renewal-image.tar.gz
+            image-id
+            SHA256SUMS
+          compression-level: 0
+          retention-days: 2
