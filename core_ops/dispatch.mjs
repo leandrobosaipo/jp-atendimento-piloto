@@ -13,7 +13,21 @@ export function records(s){
     for(const [i,p] of parts.entries())if(p.attempted_at)rows.push({id:key(source,attempt,p.index??i),event:sha(JSON.stringify(["central-event-v1",source,event])),number:digits(destination),status:p.status,
       textHash:p.content_sha256||p.text_sha256||(p.text?sha(p.text):a.content_sha256||a.text_sha256),asset:a.asset_sha256,caption:a.caption_sha256});
   }
-  for(const a of s.individual_dispatches||[])add("visit",a,a.initial_plan_id||a.review_id,a.attempt_id||a.outbound_budget_reservation_id,a.destination_e164);
+  const groups=new Map();
+  for(const a of s.individual_dispatches||[]){
+    if(a.visit_attempt_id&&a.visit_group){
+      const members=groups.get(a.visit_attempt_id)||[];members.push(a);groups.set(a.visit_attempt_id,members);
+    }else add("visit",a,a.initial_plan_id||a.review_id,a.attempt_id||a.outbound_budget_reservation_id,a.destination_e164);
+  }
+  for(const [attempt,members] of groups){
+    const a=members[0],g=a.visit_group,ids=g.appointment_ids;
+    if(!g.group_id||!/^[a-f0-9]{64}$/.test(g.group_sha256||"")||!Array.isArray(ids)||!ids.length||ids.length!==members.length)continue;
+    const actual=new Set(members.map(m=>String(m.appointment_id)));
+    if(actual.size!==members.length||new Set(ids.map(String)).size!==members.length||!ids.every(id=>actual.has(String(id))))continue;
+    if(!members.every(m=>m.review_id===a.review_id&&m.destination_e164===a.destination_e164&&m.content_sha256===a.content_sha256&&m.status===a.status&&
+      m.attempted_at===a.attempted_at&&m.outbound_budget_reservation_id===a.outbound_budget_reservation_id&&JSON.stringify(m.visit_group)===JSON.stringify(g)))continue;
+    add("visit",a,a.initial_plan_id||a.review_id,attempt,a.destination_e164);
+  }
   for(const a of s.manual_dispatches||[])add("manual",a,a.review_id,a.attempt_id||a.outbound_budget_reservation_id,a.destination_e164);
   for(const a of s.reminders||[])add("reminder",a,a.reminder_id,a.outbound_budget_reservation_id||a.reminder_id,a.destination_e164);
   for(const a of s.jp_reply_attempts||[])if(a.kind==="send")add("reply",a,a.source_message_id,a.attempt_id,a.destination_e164);

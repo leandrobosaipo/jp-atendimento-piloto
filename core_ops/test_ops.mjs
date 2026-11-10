@@ -29,3 +29,11 @@ test("new durable attempt requires exact destination and content, rejecting ambi
  for(const bad of [[new Set([rows[0].id]),rows,{text,number}],[new Set(),[...rows,...rows],{text,number}],[new Set(),rows,{text:"other",number}],[new Set(),rows,{text,number:number+"@lid"}]])
    assert.throws(()=>resolveAttempt(bad[0],bad[1],"sendText",bad[2]));
 });
+test("one selected visit covering two appointments requires its complete, consistent native cohort",()=>{
+ const text="Approved visit",number="1234567890",g={group_id:"fixture-group",group_sha256:sha("fixture"),appointment_ids:["1","2"]};
+ const a={review_id:"review",visit_group:g,visit_attempt_id:"same-attempt",outbound_budget_reservation_id:"budget",content_sha256:sha(text),destination_e164:"+"+number,status:"delivery_unknown",attempted_at:"2030-01-01T00:00:00Z",appointment_id:"1"};
+ const b={...a,appointment_id:"2"};
+ function resolve(rows){return resolveAttempt(new Set(),records({individual_dispatches:rows}),"sendText",{number,text});}
+ assert.ok(resolve([a,b]).id);
+ for(const rows of [[a],[a,a],[a,{...b,review_id:"other"}],[a,{...b,status:"provider_accepted"}],[a,{...b,content_sha256:sha("other")}],[a,{...b,destination_e164:"+1999999999"}]])assert.throws(()=>resolve(rows),/unbound_native_attempt/);
+});
