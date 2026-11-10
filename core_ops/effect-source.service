@@ -1,0 +1,15 @@
+[Unit]
+Description=Resolve the one approved native domain effect
+[Service]
+ExecStart=/usr/bin/python3 -E /usr/local/libexec/jp-core-task-reads/effect_source.py
+StateDirectory=jp-task-effects
+StateDirectoryMode=0700
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+CapabilityBoundingSet=CAP_DAC_READ_SEARCH
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+MemoryMax=128M
+TasksMax=4
+UMask=0077
