@@ -1,7 +1,8 @@
 import http from "node:http";
 import {AsyncLocalStorage} from "node:async_hooks";
+import {createHash,timingSafeEqual} from "node:crypto";
 import {admitted,withTask} from "./task_reads.mjs";
-import {guardedPost,nativeScope,wireOperation} from "./effect_guard.mjs";
+import {approval,guardedPost,nativeScope,wireOperation} from "./effect_guard.mjs";
 const current=new AsyncLocalStorage();
 function socket(request,signal){
   const body=JSON.stringify(request);if(Buffer.byteLength(body)>24000)throw Error("effect_packet_too_large");
@@ -18,8 +19,34 @@ export function wrapEngine(engine,load){
     if(!input.dispatchReady||!input.sendEnabled)return original(input);
     const row=(load().jp_reply_tasks||[]).find(t=>t.task_id===input.task_id);
     if(!row||row.status!=="planned")return original(input);
+    if(createHash("sha256").update(JSON.stringify([row.task_id,row.source_sha256,row.destination_e164,row.client_code])).digest("hex")!==input.token)return original(input);
     const request=admitted("reply",["reply-execute"]);
+    if(input.writeEnabled&&["book","move","confirm"].includes(row.plan?.kind)){
+      const base={...request,task:row.task_id,source:row.source_sha256,client:row.client_code,phone:row.destination_e164},p=row.plan,o=p.option;
+      const slot=o&&[o.date,o.time,o.professional_code,o.service_code].join("/");
+      const operations=p.kind==="confirm"?(p.appointments||[]).map(a=>["confirm",a.appointment_id]):
+        [[p.kind==="book"?"create":"move",p.kind==="book"?slot:p.move_appointment_id],["confirm_created",slot]];
+      try{for(const [operation,reference] of operations)approval("/ops-config","/ops-state",{...base,operation,reference});}
+      catch{return {status:"task_write_permission_held",attempted:0};}
+    }
     return current.run({request,task:row.task_id,load},()=>withTask(row,load,()=>original(input)));
+  }};
+}
+export function registrationPreflight(runtime,load,config){
+  const original=runtime.update;
+  return {...runtime,update(input){
+    if(config()?.enabled!==true)return original(input);
+    const s=load(),req=s.contact_registration_requests?.find(r=>r.request_id===input.request_id);
+    const t=s.contact_registration_tasks?.find(x=>x.task_id===req?.task_id);
+    if(!req||typeof input.capability!=="string"||!/^\w{64}$/.test(req.capability_hash||"")||Date.now()>=Date.parse(req.capability_expires_at)||
+      !timingSafeEqual(Buffer.from(req.capability_hash),Buffer.from(createHash("sha256").update(input.capability).digest("hex"))))return original(input);
+    if(t?.status==="pending"){
+      try{
+        const scope=admitted("registration",["update"]);
+        approval("/ops-config","/ops-state",{...scope,operation:"contact",reference:req.request_id,source:req.source_message_id,client:req.client_code,phone:req.destination_e164,task:t.task_id});
+      }catch{return {status:"task_write_permission_held",ready:false};}
+    }
+    return original(input);
   }};
 }
 export function contactScope(action,row,load,fn){

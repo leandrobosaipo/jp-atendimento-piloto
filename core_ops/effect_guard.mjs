@@ -6,7 +6,7 @@ const hash=b=>createHash("sha256").update(b).digest("hex");
 const read=f=>JSON.parse(fs.readFileSync(f));
 const ok=(v)=>{if(!v)throw Error("effect_scope_denied");};
 const fields=["role","workflow","node","task","source","client","phone","operation","reference"];
-const kinds={reply:["confirm","create","move"],registration:["contact"]};
+const kinds={reply:["confirm","confirm_created","create","move"],registration:["contact"]};
 const same=(a,b)=>fields.every(k=>a[k]===b[k]);
 export const keyOf=scope=>hash(JSON.stringify([scope.role,scope.task,scope.source,scope.operation,scope.reference]));
 const canonical=value=>Array.isArray(value)?value.map(canonical):value&&typeof value==="object"?Object.fromEntries(Object.keys(value).sort().map(k=>[k,canonical(value[k])])):value;
@@ -33,6 +33,10 @@ export function approval(config,state,scope){
 }
 export function approveBody(operation,body){
   const contents=structuredClone(body);
+  if(operation==="confirm_created"){
+    ok(/^\d+$/.test(contents.agendamento)&&contents.tipo==="5"&&Object.keys(contents).length===2);
+    contents.agendamento="{native-saved-appointment}";
+  }
   if(operation==="create"){
     ok(/^JP nova visita [a-f0-9-]{36}$/.test(contents.observacao));
     for(const k of ["lembrete","sms","whats"])ok(contents[k]==="0");
@@ -67,6 +71,13 @@ export function nativeScope(context,state,operation,body){
     return operation==="move"&&t.plan?.kind==="move"&&a.before?.appointment_id===t.plan.move_appointment_id&&a.before.item_code===body.codItem&&o&&body.profissionalAlteraAgendamento===o.professional_code&&body.horaAlteraAgendamento===o.time&&body.dataAlteraAgendamento===o.date.split("-").reverse().join("/")&&body.tipoAlteraAgendamento==="4";
   });
   ok(matched.length===1);const a=matched[0];
+  if(a.kind==="confirm_created"){
+    const saved=t.official_result,o=t.plan?.option;
+    ok(saved?.appointment_id===a.appointment_id&&saved.client_code===t.client_code&&saved.professional_code===o.professional_code&&saved.service_code===o.service_code&&saved.start?.startsWith(o.date+"T"+o.time));
+    ok(attempts.length>=1&&state.jp_reply_attempts.some(prior=>prior.task_id===t.task_id&&["create","move"].includes(prior.kind)&&prior.status==="saved"&&prior.readback?.appointment_id===a.appointment_id));
+    const reference=[o.date,o.time,o.professional_code,o.service_code].join("/");
+    return {...context,role:"reply",operation:"confirm_created",source:t.source_sha256,client:t.client_code,phone:t.destination_e164,reference};
+  }
   const reference=operation==="confirm"?body.agendamento:operation==="move"?t.plan.move_appointment_id:[a.option.date,a.option.time,a.option.professional_code,a.option.service_code].join("/");
   return {...context,role:"reply",operation,source:t.source_sha256,client:t.client_code,phone:t.destination_e164,reference};
 }

@@ -40,6 +40,15 @@ class Effects(unittest.TestCase):
         with self.assertRaises(TimeoutError):self.invoke(self.s,b,lost)
         with self.assertRaises(FileExistsError):self.invoke(self.s,b,lost)
         self.assertEqual(self.calls,['once']);self.assertFalse(any(self.log.glob('*.observed')))
+    def test_companion_confirmation_requires_returned_id(self):
+        s={**self.s,'operation':'confirm_created','reference':'2030-01-10/10:00/71/51'}
+        self.mode['allowed']['confirm_created']=True
+        actual={'agendamento':'101','tipo':'5'};f=self.arm(s,actual)
+        g=json.loads(f.read_bytes());g['payload_sha256']=e.digest({'agendamento':'{native-saved-appointment}','tipo':'5'});f.write_text(json.dumps(g))
+        with self.assertRaises(ValueError):self.invoke(s,actual)
+        (self.log/(e.domain({**s,'operation':'create'})+'.observed')).write_text(json.dumps({'native_appointment_id':'101'}))
+        with self.assertRaises(ValueError):self.invoke(s,{**actual,'agendamento':'102'})
+        self.assertEqual(self.invoke(s,actual),{'ok':True});self.assertEqual(self.calls,['confirm'])
     def test_scope_and_disabled(self):
         b={'agendamento':'999','tipo':'5'};self.arm(self.s,b)
         for changes in [{'source':'other'},{'role':'registration'},{'task':'other'},{'client':'20'},{'epoch':str(uuid.uuid4())},{'execution':'8'},{'operation':'cancel'}]:

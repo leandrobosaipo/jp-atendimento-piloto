@@ -92,7 +92,7 @@ def execute(root,audit,cfg,msg,upstream=provider):
         h=rows(load('history',dict(edtDataIni=br(day-dt.timedelta(days=365)),edtDataFim=br(day),tipoStatus='2',AgeCliente=s['client'],AgeProfissional='',AgeServico='')),'data',True)
         need(len(h)<=1000 and all(str(r.get('CodCliente') or r.get('CliCodigo'))==s['client'] for r in h))
         return {'client':client,'clients':[client],'history':[{k:r[k] for k in ('CodCliente','CliCodigo','Status','DataIni','Servico','Profissional') if k in r} for r in h],'checked_at':dt.datetime.now(dt.timezone.utc).isoformat()}
-    op=s['operation'];need(op in ('create','confirm','move','contact') and cfg.get('allowed',{}).get(op) is True)
+    op=s['operation'];need(op in ('create','confirm','confirm_created','move','contact') and cfg.get('allowed',{}).get(op) is True)
     normalized=dict(b)
     if op=='create':
         need(set(b)==set('item tipoitem profissional dataagendamento duracao cliente cupom numitens ageorigem observacao lembrete tempolembrete sms whats'.split()))
@@ -100,6 +100,15 @@ def execute(root,audit,cfg,msg,upstream=provider):
         need(b['cliente']==s['client'] and all(b.get(k)=='0' for k in ('sms','whats','lembrete')) and re.fullmatch(r'JP nova visita [a-f0-9-]{36}',b['observacao']))
         normalized['observacao']='JP nova visita {native-uuid}'
     if op=='confirm':need(b=={'tipo':'5','agendamento':s['reference']})
+    if op=='confirm_created':
+        need(set(b)=={'tipo','agendamento'} and b['tipo']=='5' and re.fullmatch(r'\d{1,16}',b['agendamento']))
+        # The first grant is completed before the native consumer can apply this separate capability.
+        prior=[{**s,'operation':'create'},{**s,'operation':'move','reference':b['agendamento']}]
+        def observed_id(before):
+            f=audit/(domain(before)+'.observed')
+            return f.is_file() and read(f).get('native_appointment_id')==b['agendamento']
+        need(any(observed_id(x) for x in prior))
+        normalized['agendamento']='{native-saved-appointment}'
     if op=='move':need(set(b)==set('dataAlteraAgendamento horaAlteraAgendamento tipoAlteraAgendamento codItem profissionalAlteraAgendamento'.split()) and b['tipoAlteraAgendamento']=='4')
     if op=='contact':
         proof=b['sourceProof'];when=unix(proof['observedAt'])
@@ -111,8 +120,13 @@ def execute(root,audit,cfg,msg,upstream=provider):
         latest=secure(CF/'mode.json');need(latest.get('mode')=='official' and latest.get('allowed',{}).get(op) is True)
         fresh=secure(Path('/etc/atendimento-piloto-integracao/appbarber-readonly.json'))
         need(fresh['source_generation']==cfg['source_generation']==secure(root/'ops-config/effect-generation.json')['generation'])
-    result=upstream(cfg,op,b)
-    lockfile(audit/(key+'.observed'),{'at':int(time.time()),'result_digest':digest(result),'domain_readback_required':True})
+    result=upstream(cfg,'confirm' if op=='confirm_created' else op,b)
+    record={'at':int(time.time()),'result_digest':digest(result),'domain_readback_required':True}
+    if op=='create' and isinstance(result,dict):
+        rows=result.get('data')
+        if isinstance(rows,list) and len(rows)==1 and str(rows[0].get('erro'))=='0' and re.fullmatch(r'\d{1,16}',str(rows[0].get('agecodigo') or '')):record['native_appointment_id']=str(rows[0]['agecodigo'])
+    if op=='move' and isinstance(result,dict) and isinstance(result.get('result'),list) and len(result['result'])==1 and str(result['result'][0].get('erro'))=='0':record['native_appointment_id']=s['reference']
+    lockfile(audit/(key+'.observed'),record)
     return result
 
 def serve():

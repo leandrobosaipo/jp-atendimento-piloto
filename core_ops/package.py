@@ -25,12 +25,14 @@ def wrap_native(native,expected):
             b'async function contactOperation(operation,row){':b'function contactOperation(operation,row){return contactScope(operation,row,load,()=>nativeContactOperation(operation,row));}\nasync function nativeContactOperation(operation,row){',
             b'const target={baseUrl:cfg.adapter_url,scopedCredential:cfg.adapter_token,instance,phone:row.destination_e164}':b'const target={baseUrl:"http://task-contact.invalid",scopedCredential:"isolated-unix-peer-credential",instance,phone:row.destination_e164,fetchImpl:effectFetch(fetch)}',
             b'source:row=>readOfficialContactSource(agendaConfig(),row.client_code)':b'source:row=>contactSource(row,load)',
+            b'const contactRuntime=createContactRuntime({':b'const contactRuntime=registrationPreflight(createContactRuntime({',
+            b"writeContact:row=>contactOperation('write',row)});":b"writeContact:row=>contactOperation('write',row)}),load,contactConfig);",
             b'writeEnabled:n8nStageAgendaWriteEnabled});':b'writeEnabled:process.env.JP_REPLY_SCOPED_WRITE_ENABLED==="1"});',
         }
         for old,new in edits.items():
             if result.count(old)!=1:raise ValueError('native_contact_contract_changed')
             result=result.replace(old,new)
-        result=b'import {contactScope,contactSource,effectFetch} from "/ops-app/effect_client.mjs";\n'+result
+        result=b'import {contactScope,contactSource,effectFetch,registrationPreflight} from "/ops-app/effect_client.mjs";\n'+result
     return result
 
 def wrap_reply(native,expected):
