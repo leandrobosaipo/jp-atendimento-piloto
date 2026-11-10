@@ -1,5 +1,6 @@
 """Offline synthetic credential refresh and rollback contracts."""
 import json
+import hashlib
 import os
 import sqlite3
 from pathlib import Path
@@ -40,6 +41,27 @@ class Tests(unittest.TestCase):
                 db.execute("UPDATE events SET state=?,reason=?,incoming=?",(state,reason,incoming))
             with self.assertRaises(RuntimeError):
                 database_audit(path,allow_human_holds=True)
+
+    def test_retained_budget_pair_requires_restored_digest_and_no_outgoing_effect(self):
+        path = self.root/"retained.sqlite3"
+        def checkpoint():
+            h=hashlib.sha256()
+            with sqlite3.connect(path) as conn:
+                for stmt in conn.iterdump():
+                    b=stmt.encode();h.update(len(b).to_bytes(8,'big'));h.update(b)
+            return h.hexdigest()
+        with sqlite3.connect(path) as db:
+            db.execute("CREATE TABLE events(actor,state,reason,incoming,outgoing,asset,plan,receipt)")
+            db.executemany("INSERT INTO events VALUES(?,?,?,?,NULL,NULL,NULL,NULL)",[
+                ('A','planning','ai_session_limit',1),('A','waiting','prior_event_requires_review',2)])
+        evidence=checkpoint()
+        with self.assertRaises(RuntimeError):database_audit(path,allow_human_holds=True)
+        self.assertEqual(database_audit(path,allow_human_holds=True,retained_db_sha256=evidence)['events']['count'],2)
+        with sqlite3.connect(path) as db:db.execute("UPDATE events SET actor='B' WHERE state='waiting'")
+        for digest in (evidence,checkpoint()):
+            with self.assertRaises(RuntimeError):database_audit(path,allow_human_holds=True,retained_db_sha256=digest)
+        with sqlite3.connect(path) as db:db.execute("UPDATE events SET actor='A',receipt='unknown' WHERE state='waiting'")
+        with self.assertRaises(RuntimeError):database_audit(path,allow_human_holds=True,retained_db_sha256=checkpoint())
 
     def test_preserves_all_non_session_fields(self):
         after = json.loads(build(self.old, self.candidate))

@@ -36,7 +36,7 @@ def record(path, value):
         json.dump(value, f, sort_keys=True); f.flush(); os.fsync(f.fileno())
 
 
-def database_audit(path, limits=None, *, allow_human_holds=False):
+def database_audit(path, limits=None, *, allow_human_holds=False, retained_db_sha256=None):
     with closing(sqlite3.connect(f'file:{path}?mode=ro', uri=True)) as db:
         db.execute('BEGIN')
         demand(db.execute('PRAGMA quick_check').fetchone()[0] == 'ok', 'Invalid SQLite database')
@@ -52,7 +52,29 @@ def database_audit(path, limits=None, *, allow_human_holds=False):
             unfinished = "state!='done'"
             if allow_human_holds and db.execute("SELECT 1 FROM events WHERE state='human' LIMIT 1").fetchone():
                 unfinished += " AND NOT (state='human' AND coalesce(reason,'')='human_ownership' AND incoming IS NOT NULL)"
-            demand(not db.execute("SELECT 1 FROM events WHERE "+unfinished+" LIMIT 1").fetchone(), 'Unfinished integration events')
+            if retained_db_sha256 is not None:
+                # The digest is from an independently restored checkpoint. The caller
+                # takes the integration admission lock before stopping the service.
+                expected = hashlib.sha256()
+                for statement in db.iterdump():
+                    data = statement.encode()
+                    expected.update(len(data).to_bytes(8,'big'))
+                    expected.update(data)
+                demand(expected.hexdigest() == retained_db_sha256, 'Retained database changed')
+                rows = db.execute("SELECT actor,state,reason,incoming,outgoing,asset,plan,receipt FROM events WHERE "+
+                                  unfinished+" ORDER BY rowid").fetchall()
+                exhausted = set()
+                for actor,state,reason,incoming,outgoing,asset,plan,receipt in rows:
+                    demand(actor and incoming and all(v is None for v in (outgoing,asset,plan,receipt)),
+                           'Unverified retained event')
+                    if state=='planning' and reason=='ai_session_limit' and actor not in exhausted:
+                        exhausted.add(actor)
+                    else:
+                        demand(state=='waiting' and reason=='prior_event_requires_review' and actor in exhausted,
+                               'Unverified retained event')
+                demand(bool(exhausted), 'Expected retained event is missing')
+            else:
+                demand(not db.execute("SELECT 1 FROM events WHERE "+unfinished+" LIMIT 1").fetchone(), 'Unfinished integration events')
         if 'turns' in names:
             demand(not db.execute("SELECT 1 FROM turns WHERE status='pending' LIMIT 1").fetchone(), 'Pending AI request')
         return result
