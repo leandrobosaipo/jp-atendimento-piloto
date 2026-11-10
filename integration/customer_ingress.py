@@ -14,6 +14,7 @@ import sqlite3
 import ssl
 import struct
 import sys
+import time
 import urllib.parse
 import urllib.request
 import uuid
@@ -367,7 +368,7 @@ def first_dispatch(path, record):
             return result
 
 
-def process_channel(raw, record, workflow, execution, epoch, cfg, app, planner, held_plan):
+def process_channel(raw, record, workflow, execution, epoch, cfg, app, planner, held_plan, *, business_check=False):
     """Consume one verified collector handoff and retain the same execution throughout."""
     need(cfg.get("channel_epoch") == epoch and cfg.get("channel_workflow") == workflow and
          isinstance(execution, str) and re.fullmatch(r"[0-9]{1,20}", execution) and
@@ -378,6 +379,8 @@ def process_channel(raw, record, workflow, execution, epoch, cfg, app, planner, 
         need(record in cfg.get("channel_fixture_records", []), "channel_fixture_scope")
     if app.claimed is not None:
         app.claimed.check(record, workflow, execution, epoch)
+    if business_check:
+        need(business_check in ("confirmed","opt_out","quoted") and app.claimed is not None and type(cfg.get("business_not_before")) is int,"business_route_closed")
     proof=None
     try:
         envelope = json.loads(raw)
@@ -400,6 +403,24 @@ def process_channel(raw, record, workflow, execution, epoch, cfg, app, planner, 
                           "workflow_id": workflow, "execution_id": execution}, claim_epoch=epoch,native_proof=proof)
     if app.claimed is not None:
         app.claimed.check(record, workflow, execution, epoch)
+    if business_check:
+        # No customer plan or transport is prepared on this path. The existing JP
+        # core checks the quoted dispatch and its visit, authorization and opt-out.
+        bound={"ok":True,"record_id":record,"workflow":workflow,"execution":execution,"status":"retained"}
+        stamp=data.get("messageTimestamp")
+        if not (str(stamp).isdigit() and cfg["business_not_before"]<=int(stamp)<=time.time()
+                and intake["state"] in ("ready","public_only") and intake["execution"]==execution
+                and sender in addresses):
+            return bound
+        conv=app._check_conversation(intake["conversation"],intake["contact"]);meta=conv["meta"]
+        need(conv.get("status")=="open" and isinstance(conv.get("labels"),list),"human_state_unknown")
+        scope=(app.chat.account,app.chat.inbox,intake["contact"],intake["conversation"])
+        if human_pause(app.db_path,scope,bool(meta.get("assignee") or meta.get("team") or "jp-atendimento-humano" in conv["labels"]),intake["request"]):
+            return bound
+        if business_check=="opt_out":
+            human_pause(app.db_path,scope,True,intake["request"])
+        app.claimed.check(record,workflow,execution,epoch)
+        return {**bound,"status":"business_ready","recipient":sender,"record_epoch":epoch}
     submitted = {k: intake[k] for k in
                  ("request", "record", "account", "inbox", "contact", "conversation", "message", "state")}
     reservation = planner.reserve(submitted)
@@ -411,7 +432,6 @@ def process_channel(raw, record, workflow, execution, epoch, cfg, app, planner, 
         plan = {"status": "held"}
     if cfg.get("service_cases") and plan.get("service_record"):
         from service_request import handle,installed
-        import time
         stamp=envelope["data"].get("messageTimestamp")
         need(app.claimed is not None and intake["execution"]==execution,"service_claim_required")
         if str(stamp).isdigit() and cfg["service_cases"]["not_before"]<=int(stamp)<=time.time():
@@ -514,17 +534,18 @@ def serve(config_path):
             pass
         def do_POST(self):
             try:
-                need(self.path in ("/inbound", "/reserve", "/plan", "/channel-inbound"), "wrong_path")
+                need(self.path in ("/inbound", "/reserve", "/plan", "/channel-inbound", "/business-preflight"), "wrong_path")
                 supplied = self.headers.get("Authorization", "")
                 need(hmac.compare_digest(supplied.encode(), b"Bearer " + token), "unauthorized")
                 size = int(self.headers.get("Content-Length", "0"))
                 need(0 < size <= 1_400_000, "size_limit")
                 body = self.rfile.read(size)
-                if self.path == "/channel-inbound":
+                if self.path in ("/channel-inbound","/business-preflight"):
                     result = process_channel(body, self.headers.get("X-JP-Record-ID"),
                         self.headers.get("X-JP-n8n-workflow-id"),
                         self.headers.get("X-JP-n8n-execution-id"),
-                        self.headers.get("X-JP-Owner-Epoch"), cfg, app, planner, held_plan)
+                        self.headers.get("X-JP-Owner-Epoch"), cfg, app, planner, held_plan,
+                        business_check=(self.headers.get("X-JP-Control-Intent") or "missing") if self.path=="/business-preflight" else False)
                 else:
                     data = json.loads(body)
                     result = (app.receive(data) if self.path == "/inbound" else
