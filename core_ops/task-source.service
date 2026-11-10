@@ -1,0 +1,17 @@
+[Unit]
+Description=Read the official schedule for one admitted reply task
+[Service]
+DynamicUser=yes
+ExecStart=/usr/bin/python3 -I /usr/local/libexec/jp-core-task-reads/task_source.py
+LoadCredential=reader:/etc/atendimento-piloto-integracao/appbarber-readonly.json
+LoadCredential=role:/etc/jp-core-task-reads/role.json
+LoadCredential=signing:/var/lib/jp-migracao-revisao/core-operacional/ops-config/task-read.key
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+CapabilityBoundingSet=
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+MemoryMax=96M
+TasksMax=4
+UMask=0077

@@ -1,7 +1,6 @@
 name: Validate isolated pilot
 on:
   push:
-    paths-ignore: ["assistant_panel/**", ".github/workflows/assistant.yml"]
   workflow_dispatch:
 permissions: {contents: read}
 jobs:
@@ -40,4 +39,6 @@ jobs:
           printf '[Service]\nEnvironment=PILOT_ACTIONS_FIXTURE=yes\nExecStart=\nExecStart=/usr/bin/python3 /usr/local/libexec/ai-ci-fixture/ci_server.py\n' | sudo tee /etc/systemd/system/atendimento-piloto-integracao.service.d/90-ci.conf >/dev/null
           assets=$(sudo sha256sum private/integration-inbox/assets.json | cut -d' ' -f1)
           sudo env GITHUB_ACTIONS=true python3 integration/install.py --ci --source-commit "$GITHUB_SHA" --manifest-sha256 "$assets" --apply
+          new=$(sudo python3 -c 'import json,hashlib; x=json.load(open("private/integration-inbox/assets.json")); x["price_source_policy"]="artwork"; print(hashlib.sha256((json.dumps(x,ensure_ascii=False,indent=2)+"\n").encode()).hexdigest())')
+          sudo env GITHUB_ACTIONS=true python3 integration/update.py --ci --source-commit "$GITHUB_SHA" --from-commit "$GITHUB_SHA" --old-manifest "$assets" --new-manifest "$new" --apply
           sudo env GITHUB_ACTIONS=true python3 integration/verify.py --ci

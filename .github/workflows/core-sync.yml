@@ -1,0 +1,20 @@
+name: Transactional read boundary
+on:
+  push:
+    branches: ['codex/nucleo-transacional-agenda-dell','codex/jp-erro-suporte-isolado','codex/jp-relogio-confirmacoes-dell']
+permissions: {contents: read}
+jobs:
+  contract:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+      - run: |
+          python3 core_sync/test_source.py
+          python3 core_sync/test_error_proof.py
+          python3 core_sync/test_clock.py
+          node --check core_sync/clock_runner.mjs
+          node --check core_sync/clock_source.mjs
+          node --check core_sync/server.mjs
+          node --test core_sync/test_inbound.mjs
+          node --check core_sync/transport.mjs
+          node --input-type=module -e "await import('./core_sync/transport.mjs'); const assert=await import('node:assert/strict'); for(const target of ['https://other.invalid/api','https://sistema.appbarber.com.br/pages/actions/gravaAgendamento.php','http://localhost:8792/api/agenda-sync/start']) assert.throws(()=>fetch(target,{method:'POST'}),/transport_denied/)"

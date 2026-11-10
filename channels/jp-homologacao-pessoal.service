@@ -1,0 +1,17 @@
+[Unit]
+Description=Verifica disponibilidade da homologação pessoal JP
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/bin/python3 -B /usr/local/libexec/jp-homologacao-pessoal/personal.py check
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target

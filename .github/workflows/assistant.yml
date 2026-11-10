@@ -1,7 +1,7 @@
 name: Validate private conversation panel
 on:
   push:
-    paths: ["assistant_panel/**", ".github/workflows/assistant.yml"]
+    paths: ["assistant_panel/**", ".github/workflows/assistant.yml", ".github/workflows/verify.yml"]
   workflow_dispatch:
 permissions: {contents: read}
 jobs:
@@ -10,28 +10,52 @@ jobs:
     timeout-minutes: 5
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          fetch-depth: 0
       - name: Validate budget, replay, context and rendering source
         run: |
           python3 assistant_panel/test_gateway.py
+          python3 assistant_panel/test_monthly_budget.py
+          node assistant_panel/test_panel.cjs
           python3 assistant_panel/test_update.py
+          python3 assistant_panel/test_maintenance.py
           node --check assistant_panel/cockpit/panel.js
           python3 -m json.tool assistant_panel/cockpit/manifest.json >/dev/null
       - name: Exercise real systemd credentials and Unix socket with private fixtures
         run: |
-          sudo useradd --system --no-create-home delladmin
+          legacy=b9719fa557eab007979685aedaf698c4f60820d5
+          git checkout --detach "$legacy"
+          sudo useradd --system --user-group --no-create-home delladmin
           sudo install -d -m 700 private/openai-inbox
           printf '%s' '{"version":"fixture","entries":[{"id":"sample","title":"Sample","source":"local","keywords":["sample"],"text":"Sample synthetic fact."}]}' | sudo tee private/openai-inbox/kb.json >/dev/null
           printf 'sk-offline%s' "$GITHUB_SHA" | sudo tee private/openai-inbox/openai.key >/dev/null
           sudo chmod 600 private/openai-inbox/kb.json private/openai-inbox/openai.key
           hash=$(sudo sha256sum private/openai-inbox/kb.json | cut -d' ' -f1)
-          sudo env GITHUB_ACTIONS=true python3 assistant_panel/install.py --ci --source-commit "$GITHUB_SHA" --kb-sha256 "$hash" --apply
+          sudo env GIT_OPTIONAL_LOCKS=0 GITHUB_ACTIONS=true python3 assistant_panel/install.py --ci --source-commit "$legacy" --kb-sha256 "$hash" --apply
           test "$(stat -c '%U:%a' /run/atendimento-piloto-ai.sock)" = delladmin:600
           printf '{"op":"info"}' | sudo -u nobody /usr/local/libexec/atendimento-piloto-ai/client.py | jq -e '.code=="unavailable"'
           printf '{"op":"info"}' | sudo -u delladmin /usr/local/libexec/atendimento-piloto-ai/client.py | jq -e '.model=="gpt-6-luna" and .daily_requests==0'
-          sudo env GITHUB_ACTIONS=true python3 assistant_panel/update.py --ci --source-commit "$GITHUB_SHA" --from-commit "$GITHUB_SHA" --apply
+          sudo env GIT_OPTIONAL_LOCKS=0 GITHUB_ACTIONS=true python3 assistant_panel/update.py --ci --source-commit "$legacy" --from-commit "$legacy" --apply
+          git checkout --detach "$GITHUB_SHA"
+          # Real systemd cutover with synthetic integration state; never a real channel.
+          sudo install -d -m 755 /usr/local/libexec/atendimento-piloto-integracao /etc/atendimento-piloto-integracao
+          sudo install -m 755 integration/{service,provider,client,policy}.py /usr/local/libexec/atendimento-piloto-integracao/
+          printf '%s' '{"bridge":"127.0.0.1","adapter_token":"local-ci","actors":{"A":{"conversation":3}}}' | sudo tee /etc/atendimento-piloto-integracao/runtime.json >/dev/null
+          printf '%s' '{"assets":[]}' | sudo tee /etc/atendimento-piloto-integracao/assets.json >/dev/null
+          printf '%s' '{"services":{},"professionals":{}}' | sudo tee /etc/atendimento-piloto-integracao/appbarber-readonly.json >/dev/null
+          sudo install -m 644 integration/atendimento-piloto-integracao.service /etc/systemd/system/
+          sudo systemctl daemon-reload
+          sudo systemctl start atendimento-piloto-integracao.service
+          sleep 2
+          printf '{"op":"history","actor":"A"}' | sudo -u delladmin /usr/local/libexec/atendimento-piloto-integracao/client.py | jq -e '.status=="ok"'
+          sudo env GIT_OPTIONAL_LOCKS=0 GITHUB_ACTIONS=true python3 assistant_panel/update.py --ci --maintenance --source-commit "$GITHUB_SHA" --from-commit "$legacy" --apply
+          test "$(stat -c '%U:%a' /run/atendimento-piloto-ai.sock)" = delladmin:600
+          sudo systemctl is-active atendimento-piloto-integracao.service atendimento-piloto-ai.socket atendimento-piloto-ai.service
+          printf '{"op":"history","actor":"A"}' | sudo -u delladmin /usr/local/libexec/atendimento-piloto-integracao/client.py | jq -e '.status=="ok"'
+          printf '{"op":"info"}' | sudo -u delladmin /usr/local/libexec/atendimento-piloto-ai/client.py | jq -e '.daily_requests==0 and .monthly_micro_usd==10000000'
           tmp=$(mktemp)
           sudo cat private/openai-inbox/kb.json | sed 's/"version":"fixture"/"version":"fixture2"/' > "$tmp"
           new=$(sha256sum "$tmp" | cut -d' ' -f1)
           sudo install -m 600 "$tmp" "private/openai-inbox/kb-$new.json"
-          sudo env GITHUB_ACTIONS=true python3 assistant_panel/update_knowledge.py --ci --source-commit "$GITHUB_SHA" --expected-old "$hash" --expected-new "$new" --apply
+          sudo env GIT_OPTIONAL_LOCKS=0 GITHUB_ACTIONS=true python3 assistant_panel/update_knowledge.py --ci --source-commit "$GITHUB_SHA" --expected-old "$hash" --expected-new "$new" --apply
           printf '{"op":"info"}' | sudo -u delladmin /usr/local/libexec/atendimento-piloto-ai/client.py | jq -e '.kb_version=="fixture2" and .daily_requests==0'

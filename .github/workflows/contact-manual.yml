@@ -1,0 +1,14 @@
+name: Private operator contact handoff
+on:
+  push:
+    paths: ['core_ops/*manual_contact*', 'core_ops/*contact_operator*', 'core_ops/package.py', '.github/workflows/contact-manual.yml']
+permissions: {contents: read}
+jobs:
+  manual:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+      - run: |
+          python3 core_ops/test_contact_operator.py
+          node core_ops/test_manual_contact.mjs
+          node --test core_ops/test_ops.mjs core_ops/test_effect_guard.mjs

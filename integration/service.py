@@ -3,6 +3,9 @@
 import base64, datetime as dt, hashlib, hmac, http.server, io, json, os, pathlib, re, secrets, socket, socketserver, sqlite3, threading, unicodedata, urllib.error, urllib.parse, urllib.request, uuid
 from zoneinfo import ZoneInfo
 import provider
+import fcntl
+import struct
+from contextlib import contextmanager
 
 HERE=pathlib.Path(__file__).resolve().parent
 ZONE=ZoneInfo("America/Cuiaba")
@@ -57,6 +60,21 @@ class App:
         with self.db() as conn:
             conn.execute("PRAGMA journal_mode=WAL")
             conn.execute("""CREATE TABLE IF NOT EXISTS events(req TEXT PRIMARY KEY,actor TEXT NOT NULL,question TEXT NOT NULL,options TEXT NOT NULL,state TEXT NOT NULL,incoming INTEGER UNIQUE,outgoing INTEGER,reserved_asset TEXT,asset TEXT,plan TEXT,receipt TEXT,reason TEXT,stamp TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)""")
+            conn.execute("""CREATE TABLE IF NOT EXISTS parts(req TEXT NOT NULL,pos INTEGER NOT NULL,content TEXT NOT NULL,asset TEXT,private INTEGER NOT NULL,state TEXT NOT NULL DEFAULT 'pending',outgoing INTEGER UNIQUE,attachment TEXT,PRIMARY KEY(req,pos))""")
+            conn.execute("""CREATE TABLE IF NOT EXISTS human_ownership (
+                episode TEXT PRIMARY KEY, account INTEGER NOT NULL, inbox INTEGER NOT NULL,
+                conversation INTEGER NOT NULL, contact INTEGER NOT NULL, reason TEXT NOT NULL,
+                opened TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, released TEXT, release_cut INTEGER)""")
+            if "release_cut" not in {r[1] for r in conn.execute("PRAGMA table_info(human_ownership)")}:
+                conn.execute("ALTER TABLE human_ownership ADD COLUMN release_cut INTEGER")
+            conn.execute("""CREATE UNIQUE INDEX IF NOT EXISTS human_current ON human_ownership(account,inbox,conversation) WHERE released IS NULL""")
+        self.send_locks={actor:threading.Lock() for actor in settings["actors"]}
+    @contextmanager
+    def admission(self):
+        with open(self.dbfile,"rb") as guard:
+            try:fcntl.flock(guard,fcntl.LOCK_SH|fcntl.LOCK_NB)
+            except BlockingIOError:raise Stop("maintenance")
+            yield
     def db(self):
         c=sqlite3.connect(self.dbfile,timeout=6);c.row_factory=sqlite3.Row;return c
     def row(self,rid):
@@ -73,6 +91,63 @@ class App:
         return f"/api/v1/accounts/{self.cfg['account']}/conversations/{conv}/messages"
     def messages(self,actor):
         return local_request(13300,self.chatpath(actor),headers={"api_access_token":self.cfg["agent_token"]})["payload"]
+    def owner_key(self,actor):
+        x=self.cfg["actors"][actor]
+        return (self.cfg["account"],self.cfg["inbox"],x["conversation"],x["contact"])
+    def native_owner(self,actor):
+        account,inbox,conversation,contact=self.owner_key(actor)
+        row=local_request(13300,self.chatpath(actor).removesuffix("/messages"),headers={"api_access_token":self.cfg["agent_token"]})
+        meta=row.get("meta",{})
+        need((row.get("account_id"),row.get("inbox_id"),row.get("id"),meta.get("sender",{}).get("id"))==
+             (account,inbox,conversation,contact),"conversation_identity_mismatch")
+        need(isinstance(row.get("labels"),list) and row.get("status") in ("open","pending","resolved","snoozed"),"conversation_status_unknown")
+        if meta.get("assignee") or meta.get("team"):return "assigned"
+        if "jp-atendimento-humano" in row["labels"]:return "label"
+        if row["status"] in ("snoozed","resolved"):return row["status"]
+        return None
+    def ownership(self,actor,reason=None):
+        key=self.owner_key(actor)
+        with self.db() as db:
+            if reason:
+                db.execute("""INSERT OR IGNORE INTO human_ownership(episode,account,inbox,conversation,contact,reason)
+                              VALUES(?,?,?,?,?,?)""",(str(uuid.uuid4()),*key,reason))
+            hold=db.execute("""SELECT episode,contact,reason FROM human_ownership
+                WHERE account=? AND inbox=? AND conversation=? AND released IS NULL""",key[:3]).fetchone()
+        if hold:need(hold["contact"]==key[3],"conversation_identity_mismatch")
+        return dict(hold) if hold else None
+    def hold_event(self,row):
+        actor=row["actor"]
+        hold=self.ownership(actor)
+        # A takeover may have opened and closed while a request was being planned.
+        with self.db() as db:
+            old=db.execute("""SELECT 1 FROM human_ownership h JOIN events e ON e.req=?
+                WHERE h.account=? AND h.inbox=? AND h.conversation=? AND h.contact=?
+                AND h.released IS NOT NULL AND e.rowid<=h.release_cut LIMIT 1""",
+                (row["req"],*self.owner_key(actor))).fetchone()
+        if not hold and not old:
+            reason=self.native_owner(actor)
+            if reason:hold=self.ownership(actor,reason)
+        if hold or old:
+            self.advance(row["req"],row["state"],"human",reason="human_ownership")
+        return bool(hold or old)
+    def operator_ownership(self,msg,peer_uid):
+        need(peer_uid==0,"denied")
+        actor=msg.get("actor")
+        need(actor in self.cfg["actors"],"invalid_actor")
+        key=self.owner_key(actor)
+        need((msg.get("conversation"),msg.get("contact"))==key[2:],"conversation_identity_mismatch")
+        with self.send_locks[actor]:
+            native=self.native_owner(actor)
+            if msg["op"]=="human-take":
+                return self.ownership(actor,native or "operator")
+            need(msg["op"]=="human-release" and not native,"human_still_assigned")
+            with self.db() as db:
+                changed=db.execute("""UPDATE human_ownership SET released=CURRENT_TIMESTAMP,
+                    release_cut=(SELECT COALESCE(MAX(rowid),0) FROM events) WHERE
+                    episode=? AND account=? AND inbox=? AND conversation=? AND contact=? AND released IS NULL""",
+                    (msg.get("episode"),*key)).rowcount
+            need(changed==1,"wrong_ownership_episode")
+            return {"status":"released","pending_replayed":0}
     def options(self,msg):
         op=msg.get("intent","auto")
         need(op in ("auto","price","availability","services_art","club_art"),"invalid_intent")
@@ -85,9 +160,13 @@ class App:
         sanitized=re.sub(r"\b20\d\d-(?:0[1-9]|1[0-2])-(?:0[1-9]|[12]\d|3[01])\b"," ",q)
         need(not re.search(r"@|\b\d[\d .()-]{7,}\d\b",sanitized),"use_fictional_text")
         opts=self.options(msg);q=q.strip();o=json.dumps(opts,sort_keys=True)
-        with self.actor_locks[actor]:
+        with self.admission(),self.actor_locks[actor]:
             from policy import classify,group_for
-            g=group_for(classify(q,opts,self.prov)[0])
+            with self.db() as c:
+                prior=c.execute("SELECT plan,state FROM events WHERE actor=? ORDER BY rowid DESC LIMIT 1",(actor,)).fetchone()
+            previous=json.loads(prior["plan"]) if prior and prior["plan"] and prior["state"]=="done" else {}
+            lookup=self.followup(q,opts,previous)
+            g=group_for(classify(lookup,opts,self.prov)[0])
             choice=secrets.choice([a["id"] for a in self.catalog["assets"] if a["group"]==g]) if g else None
             with self.db() as c:
                 fresh=c.execute("INSERT OR IGNORE INTO events(req,actor,question,options,state,reserved_asset) VALUES(?,?,?,?,'opening',?)",(rid,actor,q,o,choice)).rowcount
@@ -100,6 +179,13 @@ class App:
                 incoming=local_request(13300,path,{"content":q,"echo_id":rid})
                 mid=incoming["id"];need(type(mid) is int and mid>0,"invalid_incoming")
                 self.advance(rid,"opening","incoming",incoming=mid)
+                with self.send_locks[actor]:
+                    if self.hold_event(self.row(rid)):return self.status(rid)
+                with self.db() as c:
+                    prior=c.execute("SELECT 1 FROM events WHERE actor=? AND rowid<(SELECT rowid FROM events WHERE req=?) AND state NOT IN ('done','human') LIMIT 1",(actor,rid)).fetchone()
+                if prior:
+                    self.advance(rid,"incoming","waiting",reason="prior_event_requires_review")
+                    return self.status(rid)
                 # Only this UI triggers the local n8n webhook. The workflow rereads the actual inbox record.
                 local_request(15678,"/webhook/pilot-integrated-v1",{"request":rid,"incoming":mid},{"X-Pilot-Integrated":self.cfg["hook_token"]},timeout=110)
             except Exception:
@@ -107,7 +193,54 @@ class App:
                 pass
             return self.status(rid)
     def status(self,rid):
-        row=self.row(uid(rid));return json.loads(row["receipt"]) if row["state"]=="done" else {"status":"held","request":rid,"state":row["state"],"incoming":row["incoming"],"outgoing":row["outgoing"],"reason":row["reason"]}
+        row=self.row(uid(rid))
+        if row["state"]=="done":return json.loads(row["receipt"])
+        with self.db() as c:
+            parts=[dict(x) for x in c.execute("SELECT pos,state,outgoing FROM parts WHERE req=? ORDER BY pos",(rid,))]
+        return {"status":"held","request":rid,"state":row["state"],"incoming":row["incoming"],"outgoing":row["outgoing"],"reason":row["reason"],"parts":parts}
+    def receive_channel(self,raw,record,workflow,execution,epoch):
+        """Admit only the verified native identity owned by this inbox in the current epoch."""
+        route=self.cfg["channel_ingress"]
+        now=int(dt.datetime.now(dt.timezone.utc).timestamp())
+        need(route["start"]<=now<route["until"] and (epoch,workflow)==(route["epoch"],route["workflow"]) and
+             re.fullmatch(r"[0-9]{1,20}",execution or ""),"closed_channel")
+        instance=route["instance"].encode()
+        need(sha(len(instance).to_bytes(4,"big")+instance+raw)==record,"wrong_record")
+        envelope=json.loads(raw)
+        need(isinstance(envelope,dict) and envelope.get("instance")==route["instance"] and
+             str(envelope.get("event","")).lower().replace("_",".")=="messages.upsert","wrong_event")
+        data=envelope["data"];key=data["key"];body=data["message"]
+        stamp=data.get("messageTimestamp")
+        need(type(stamp) is int and route["start"]<=stamp<=now+15,"outside_channel_window")
+        sender=key.get("remoteJid");native_id=key.get("id")
+        need(key.get("fromMe") is False and isinstance(sender,str) and re.fullmatch(r"[0-9]{6,20}@(lid|s\.whatsapp\.net)",sender)
+             and isinstance(native_id,str) and re.fullmatch(r"[A-Za-z0-9_-]{6,160}",native_id),"unsupported_native_identity")
+        # Alternate addresses are usable only with an independent binding to this same contact.
+        def binding(jid):
+            return route["bindings"].get(sha(instance+b"\x00"+jid.encode()))
+        actor=binding(sender)
+        need(actor in self.cfg["actors"] and actor!="personal-test","unbound_channel_identity")
+        alternate=key.get("remoteJidAlt")
+        need(not alternate or (isinstance(alternate,str) and binding(alternate)==actor),"ambiguous_channel_identity")
+        need(not key.get("participant") and not key.get("participantAlt"),"unexpected_participant")
+        text=body.get("conversation") if isinstance(body,dict) else None
+        if text is None and isinstance(body,dict):text=(body.get("extendedTextMessage") or {}).get("text")
+        need(isinstance(text,str) and 0<len(text.strip())<=600,"unsupported_native_content")
+        rid=str(uuid.uuid5(uuid.NAMESPACE_URL,"jp-channel-intake:"+route["instance"]+":"+native_id))
+        account,inbox,conv,contact=self.owner_key(actor)
+        identity=(account,inbox,conv,contact,sha(text.encode()))
+        with self.db() as db:
+            db.execute("""CREATE TABLE IF NOT EXISTS channel_intake(req TEXT PRIMARY KEY,account INTEGER,inbox INTEGER,
+                        conversation INTEGER,contact INTEGER,text_hash TEXT,first_record TEXT NOT NULL)""")
+            db.execute("INSERT OR IGNORE INTO channel_intake VALUES(?,?,?,?,?,?,?)",(rid,*identity,record))
+            saved=db.execute("SELECT account,inbox,conversation,contact,text_hash FROM channel_intake WHERE req=?",(rid,)).fetchone()
+            need(tuple(saved)==identity,"native_message_conflict")
+        r=self.submit({"actor":actor,"text":text,"request":rid})
+        if r.get("status")=="ok":outcome="processed"
+        else:
+            need(r.get("state") in ("human","waiting") and type(r.get("incoming")) is int,"channel_reconciliation_required")
+            outcome="retained"
+        return {"ok":True,"workflow":workflow,"execution":execution,"record_id":record,"status":outcome}
     def step(self,op,body):
         rid=uid(body.get("request"));row=self.row(rid);mid=body.get("incoming");need(type(mid) is int and row["incoming"]==mid,"wrong_incoming")
         key={"request":rid,"incoming":mid}
@@ -119,30 +252,70 @@ class App:
             need(len(match)==1,"inbox_readback_mismatch")
             self.advance(rid,"verifying","claimed");return key
         if op=="plan":
+            need(row["state"]=="claimed","held")
+            with self.send_locks[row["actor"]]:
+                if self.hold_event(row):raise Stop("human_ownership")
             self.advance(rid,"claimed","planning")
             p,asset=self.plan(row)
-            self.advance(rid,"planning","prepared",plan=json.dumps(p,ensure_ascii=False),asset=asset);return key
+            private=p["decision"]=="handoff"
+            parts=message_parts(p["reply"],asset,private)
+            with self.db() as c:
+                need(c.execute("UPDATE events SET state='prepared',plan=?,asset=? WHERE req=? AND state='planning'",(json.dumps(p,ensure_ascii=False),asset,rid)).rowcount==1,"held")
+                c.executemany("INSERT INTO parts(req,pos,content,asset,private) VALUES(?,?,?,?,?)",[(rid,i,content,aid,private) for i,(content,aid) in enumerate(parts,1)])
+                if private:
+                    c.execute("""INSERT OR IGNORE INTO human_ownership(episode,account,inbox,conversation,contact,reason)
+                              VALUES(?,?,?,?,?,'handoff')""",(rid,*self.owner_key(row["actor"])))
+            return key
         need(op=="deliver","unknown_step")
-        self.advance(rid,"prepared","sending")
-        p=json.loads(row["plan"]);art=self.asset(row["asset"]) if row["asset"] else None
-        private=p["decision"]=="handoff";need(not (art and private),"private_art_mismatch")
-        fields={"content":p["reply"],"message_type":"outgoing","private":"true" if private else "false"}
+        with self.send_locks[row["actor"]]:
+            return self.deliver(rid)
+    def post_part(self,row,part):
+        art=self.asset(part["asset"]) if part["asset"] else None
+        private=bool(part["private"])
+        fields={"content":part["content"],"message_type":"outgoing","private":"true" if private else "false"}
         if art:
             data,ct=multipart(fields,self.artbytes(art))
         else:
             data={**fields,"private":private};ct="application/json"
         response=local_request(13300,self.chatpath(row["actor"]),data,{"api_access_token":self.cfg["agent_token"]},ct)
         oid=response["id"];need(type(oid) is int and oid>0,"invalid_outcome")
-        self.advance(rid,"sending","checking",outgoing=oid)
+        return oid
+    def confirm_part(self,row,part):
+        oid=part["outgoing"];private=bool(part["private"])
+        art=self.asset(part["asset"]) if part["asset"] else None
         m=next((m for m in self.messages(row["actor"]) if m.get("id")==oid),None)
-        need(m and m["private"]==private and m["content"]==p["reply"],"message_readback_mismatch")
+        need(m and m["message_type"]==1 and m["private"]==private and m["content"]==part["content"],"message_readback_mismatch")
         attachment=None
         if art:
             values=m.get("attachments",[]);need(len(values)==1,"attachment_missing")
             f=values[0];need(sha(stored_image(f["data_url"]))==art["sha256"],"attachment_hash_mismatch")
             attachment={"id":f["id"],"asset":art["id"],"group":art["group"],"sha256":art["sha256"],"bytes":art["bytes"]}
-        result={"status":"ok","request":rid,"actor":row["actor"],"conversation":self.cfg["actors"][row["actor"]]["conversation"],"incoming":mid,"outgoing":oid,"private":private,"reply":p["reply"],"provider":p["provider"],"ai":p["ai"],"attachment":attachment}
-        self.advance(rid,"checking","done",receipt=json.dumps(result,ensure_ascii=False));return result
+        else:need(not m.get("attachments"),"unexpected_attachment")
+        return attachment
+    def deliver(self,rid):
+        row=self.row(rid)
+        if row["state"]=="done":return self.status(rid)
+        if row["state"]=="prepared":self.advance(rid,"prepared","sending")
+        else:need(row["state"]=="sending","held")
+        with self.db() as c:parts=[dict(x) for x in c.execute("SELECT * FROM parts WHERE req=? ORDER BY pos",(rid,))]
+        need(parts,"missing_plan")
+        receipts=[]
+        for part in parts:
+            key=(rid,part["pos"])
+            if part["state"]=="pending":
+                if not part["private"] and self.hold_event(self.row(rid)):raise Stop("human_ownership")
+                with self.db() as c:need(c.execute("UPDATE parts SET state='sending' WHERE req=? AND pos=? AND state='pending'",key).rowcount==1,"held")
+                oid=self.post_part(row,part)
+                with self.db() as c:c.execute("UPDATE parts SET state='checking',outgoing=? WHERE req=? AND pos=? AND state='sending'",(oid,*key))
+                part.update(state="checking",outgoing=oid)
+            need(part["state"]!="sending","part_delivery_unknown")
+            if part["state"]=="checking":
+                part["attachment"]=json.dumps(self.confirm_part(row,part))
+                with self.db() as c:c.execute("UPDATE parts SET state='confirmed',attachment=? WHERE req=? AND pos=? AND state='checking'",(part["attachment"],*key))
+            receipts.append({"pos":part["pos"],"content":part["content"],"outgoing":part["outgoing"],"attachment":json.loads(part["attachment"]),"state":"confirmed"})
+        p=json.loads(row["plan"]);oid=receipts[-1]["outgoing"]
+        result={"status":"ok","request":rid,"actor":row["actor"],"conversation":self.cfg["actors"][row["actor"]]["conversation"],"incoming":row["incoming"],"outgoing":oid,"private":p["decision"]=="handoff","reply":p["reply"],"provider":p["provider"],"ai":p["ai"],"attachment":receipts[-1]["attachment"],"parts":receipts}
+        self.advance(rid,"sending","done",outgoing=oid,receipt=json.dumps(result,ensure_ascii=False));return result
     def asset(self,aid):
         return next(a for a in self.catalog["assets"] if a["id"]==aid)
     def artbytes(self,a):
@@ -151,16 +324,36 @@ class App:
         b=p.read_bytes();need(len(b)==a["bytes"]<=1_500_000 and b.startswith(b"\xff\xd8") and sha(b)==a["sha256"],"asset_integrity");return b
     def plan(self,row):
         from policy import prepare
-        context,fixed,decision,group=prepare(row["question"],json.loads(row["options"]),self.prov,self.catalog,provider.query)
+        opts=json.loads(row["options"])
+        with self.db() as c:
+            prev=c.execute("SELECT plan FROM events WHERE actor=? AND rowid<(SELECT rowid FROM events WHERE req=?) ORDER BY rowid DESC LIMIT 1",(row["actor"],row["req"])).fetchone()
+        previous=json.loads(prev["plan"]) if prev and prev["plan"] else {}
+        question=self.followup(row["question"],opts,previous)
+        context,fixed,decision,group=prepare(question,opts,self.prov,self.catalog,provider.query)
+        repeated=context["category"]=="clarify" and previous.get("reply","").endswith(fixed)
+        undecided=context["category"]=="chat" and normals(question).strip(" ?!.") in ("nao sei","sim","isso","ok")
+        if previous.get("provider",{}).get("category")=="clarify" and (repeated or undecided):
+            context={"category":"unresolved_price"};fixed="A descrição do serviço precisa de confirmação pela equipe.";decision="handoff";group=None
         asset=self.asset(row["reserved_asset"]) if group else None
         if asset:need(asset["group"]==group,"reserved_group_mismatch")
         if asset:self.artbytes(asset)
         session=str(uuid.uuid5(uuid.NAMESPACE_URL,"isolated-chatwoot:"+str(self.cfg["inbox"])+":"+row["actor"]))
-        ai=self.ai({"id":row["req"],"session":session,"text":row["question"],"context":context},self.cfg["hmac"].encode())
-        answer=fixed or ai["reply"];action=decision or ai["decision"]
+        trusted=dict(context,local_reply=fixed,local_decision=decision) if fixed else context
+        ai=self.ai({"id":row["req"],"session":session,"text":row["question"],"context":trusted},self.cfg["hmac"].encode())
+        answer=ai["reply"];action=ai["decision"]
         return {"reply":answer,"decision":action,"provider":context,"ai":{k:ai[k] for k in ("model","tokens","estimate_micro_usd","mode","kb_version")}},asset["id"] if asset and action=="answer" else None
+    def followup(self,q,options,previous):
+        if options["intent"]!="auto" or previous.get("provider",{}).get("category")!="clarify":return q
+        short=normals(q).strip(" ?!.");asked=normals(previous["reply"])
+        if "coloracao" in asked and re.fullmatch(r"(?:(?:da|de|na) )?(barba|protese)",short):return "Qual o preço da coloração "+short+"?"
+        if "barba" in asked and short in ("simples","completa","barba simples","barba completa"):return "Qual o preço da barba "+short+"?"
+        if short=="sim":
+            for item in ("hidratacao intensa","sobrancelha na navalha"):
+                if item in asked:return "Qual o preço de "+item+"?"
+        return q
     def ui(self,msg):
         op=msg.get("op")
+        need(msg.get("actor") != "personal-test","reserved_actor")
         if op=="ask":return self.submit(msg)
         if op=="status":return self.status(uid(msg.get("request")))
         if op=="asset":
@@ -171,15 +364,46 @@ class App:
             rows=c.execute("SELECT req,question FROM events WHERE actor=? ORDER BY rowid DESC LIMIT 12",(actor,)).fetchall()
         return {"status":"ok","conversation":self.cfg["actors"][actor]["conversation"],"services":{k:v["name"] for k,v in self.prov["services"].items()},"professionals":{k:v["name"] for k,v in self.prov["professionals"].items()},"events":[{"question":x["question"],**self.status(x["req"])} for x in reversed(rows)]}
 
+def message_parts(reply,asset,private):
+    if private:
+        need(not asset,"private_art_mismatch")
+        return [(reply,None)]
+    # Preserve short answers, decimal numbers and complete emphasis spans.
+    reply=re.sub(r"\*\*([^*]+)\*\*",r"*\1*",reply.strip())
+    need(reply.count("*")%2==0,"unbalanced_emphasis")
+    chunks=[];current="";end=0
+    for match in re.finditer(r"\*[^*]+\*|https?://\S+|R\$\s*[\d.,]+|\S+",reply):
+        token=match.group();original_gap=reply[end:match.start()]
+        gap="\n" if "\n" in original_gap else " " if original_gap else ""
+        end=match.end()
+        need(len(token)<=250,"part_too_long")
+        if current and gap and (gap=="\n" or len(current)+len(gap)+len(token)>250 or (len(current)>=80 and current.endswith((".","!","?",";")))):
+            need(current.count("*")%2==0,"cannot_split_emphasis");chunks.append((current,None));current=""
+        current=current+gap+token if current else token
+        need(len(current)<=250,"part_too_long")
+    if current:chunks.append((current,None))
+    need(0<len(chunks)<=10-bool(asset),"part_count")
+    if asset:chunks.append(("Tabela de serviços" if asset.startswith("servicos-") else "Planos do Clube",asset))
+    return chunks
+
 class Web(http.server.BaseHTTPRequestHandler):
     def log_message(self,*args):pass
     def do_POST(self):
         code=200;body={}
         try:
-            need(hmac.compare_digest(self.headers.get("X-Pilot-Adapter",""),self.server.app.cfg["adapter_token"]),"denied")
-            op=self.path.removeprefix("/");need(op in ("claim","plan","deliver"),"unknown_step")
-            n=int(self.headers.get("Content-Length","0"));need(0<n<1000,"oversize")
-            body=json.loads(self.rfile.read(n));result=self.server.app.step(op,body)
+            app=self.server.app;n=int(self.headers.get("Content-Length","0"))
+            if self.path=="/channel-inbound":
+                route=app.cfg.get("channel_ingress",{})
+                token=route.get("token","")
+                need(len(token)>=32 and hmac.compare_digest(self.headers.get("Authorization",""),"Bearer "+token),"denied")
+                need(0<n<=16384,"oversize")
+                result=app.receive_channel(self.rfile.read(n),self.headers.get("X-JP-Record-ID"),self.headers.get("X-JP-n8n-workflow-id"),
+                                           self.headers.get("X-JP-n8n-execution-id"),self.headers.get("X-JP-Owner-Epoch"))
+            else:
+                need(hmac.compare_digest(self.headers.get("X-Pilot-Adapter",""),app.cfg["adapter_token"]),"denied")
+                op=self.path.removeprefix("/");need(op in ("claim","plan","deliver"),"unknown_step")
+                need(0<n<1000,"oversize")
+                body=json.loads(self.rfile.read(n));result=app.step(op,body)
         except Exception as e:
             code=409 if isinstance(e,Stop) else 502;result={"status":"held"}
             if isinstance(body,dict) and isinstance(body.get("request"),str):
@@ -191,11 +415,35 @@ class Screen(socketserver.StreamRequestHandler):
         self.connection.settimeout(8)
         try:
             raw=self.rfile.readline(4097);need(len(raw)<=4096 and raw.endswith(b"\n"),"oversize")
-            result=self.server.app.ui(json.loads(raw))
+            msg=json.loads(raw)
+            if msg.get("op") in ("human-take","human-release"):
+                peer=self.connection.getsockopt(socket.SOL_SOCKET,socket.SO_PEERCRED,struct.calcsize("3i"))
+                result=self.server.app.operator_ownership(msg,struct.unpack("3i",peer)[1])
+            elif msg.get("op")=="personal-ingress":
+                peer=self.connection.getsockopt(socket.SOL_SOCKET,socket.SO_PEERCRED,struct.calcsize("3i"))
+                result=personal_ingress(self.server.app,msg,struct.unpack("3i",peer)[1])
+            else:
+                result=self.server.app.ui(msg)
         except Exception as e:result={"status":"error","code":str(e) if isinstance(e,Stop) else "unavailable"}
         self.wfile.write(json.dumps(result,ensure_ascii=False).encode()+b"\n")
 class Unix(socketserver.ThreadingUnixStreamServer):
     daemon_threads=True
+
+def personal_ingress(app,msg,peer_uid):
+    # Authentication of the original encrypted record and personal JID belong to the root reader.
+    need(peer_uid==0 and "personal-test" in app.cfg["actors"],"denied")
+    need(set(msg)=={"op","native_id_sha256","record_id","text"},"invalid_personal_event")
+    for field in ("record_id","native_id_sha256"):
+        need(isinstance(msg[field],str) and re.fullmatch("[a-f0-9]{64}",msg[field]),"invalid_record_identity")
+    text=msg["text"]
+    need(isinstance(text,str) and normals(text.strip().rstrip(".!?"))=="marcelinho, quero ver a tabela de precos do piloto","unexpected_personal_request")
+    rid=str(uuid.uuid5(uuid.NAMESPACE_URL,"jp-personal-inbound:"+msg["native_id_sha256"]))
+    with app.db() as conn:
+        conn.execute("CREATE TABLE IF NOT EXISTS personal_intake (slot INTEGER PRIMARY KEY CHECK(slot=1),req TEXT NOT NULL,original_record TEXT NOT NULL)")
+        conn.execute("INSERT OR IGNORE INTO personal_intake VALUES(1,?,?)",(rid,msg["record_id"]))
+        need(conn.execute("SELECT req FROM personal_intake WHERE slot=1").fetchone()[0]==rid,"personal_slot_used")
+    return app.submit({"actor":"personal-test","text":text,"request":rid,"intent":"services_art"})
+
 def serve():
     os.umask(0o077);cred=pathlib.Path(os.environ["CREDENTIALS_DIRECTORY"])
     cfg=json.loads((cred/"runtime").read_bytes());manifest=json.loads((cred/"manifest").read_bytes());prov=json.loads((cred/"appbarber").read_bytes())

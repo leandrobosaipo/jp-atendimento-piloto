@@ -1,0 +1,9 @@
+[Unit]
+Description=Scoped reply task reads
+[Socket]
+ListenStream=/var/lib/jp-migracao-revisao/core-model/task-reads.sock
+ExecStartPost=/usr/bin/chown 64681:64681 /var/lib/jp-migracao-revisao/core-model/task-reads.sock
+SocketMode=0600
+RemoveOnStop=yes
+[Install]
+WantedBy=sockets.target

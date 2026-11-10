@@ -3,6 +3,7 @@ import argparse
 import hashlib
 import json
 import os
+import re
 import pathlib
 import shutil
 import subprocess
@@ -12,6 +13,15 @@ from install import ROOT,SRC,BIN,WEB,run
 def installed_source(receipts):
     original=json.loads((receipts/"ready.json").read_text())["source"]
     updates=sorted(p for p in receipts.glob("update-*") if p.is_dir())
+    resolved=[]
+    for p in updates:
+        if (p/"rollback.json").is_file():
+            rollback=json.loads((p/"rollback.json").read_text())
+            intent=json.loads((p/"intent.json").read_text())
+            if rollback.get("status")!="resolved" or rollback.get("source")!=intent.get("previous") or rollback.get("failed_source")!=intent.get("source"):
+                raise SystemExit("Invalid rollback receipt")
+            resolved.append(p)
+    updates=[p for p in updates if p not in resolved]
     if any(not (p/"ready.json").is_file() for p in updates):
         raise SystemExit("Incomplete update requires reconciliation")
     pointer=receipts/"installed-current.json"
@@ -33,12 +43,17 @@ def info():
 
 def update(args):
     os.umask(0o077)
-    if os.geteuid()!=0 or run("git","rev-parse","HEAD")!=args.source_commit or run("git","status","--porcelain"):raise SystemExit("Release guard failed")
+    if os.geteuid()!=0 or not re.fullmatch(r"[0-9a-f]{40}",args.source_commit) or not re.fullmatch(r"[0-9a-f]{40}",args.from_commit) or run("git","rev-parse","HEAD")!=args.source_commit or run("git","status","--porcelain"):raise SystemExit("Release guard failed")
     if args.ci:
         if os.environ.get("GITHUB_ACTIONS")!="true":raise SystemExit("CI required")
     elif not (run("systemd-detect-virt")=="microsoft" and run("hostname")=="agentes-lab" and pathlib.Path("/etc/machine-id").read_text().strip()==args.machine_id):raise SystemExit("Guest identity mismatch")
     receipts=ROOT/"private/assistant-install"
     if installed_source(receipts)!=args.from_commit:raise SystemExit("Unexpected prior installation")
+    files={"gateway.py":BIN/"gateway.py","client.py":BIN/"client.py",**{"cockpit/"+n:WEB/n for n in ("panel.js","panel.css","index.html","manifest.json")}}
+    if getattr(args,"maintenance",False):
+        from maintenance import cutover
+        print(json.dumps(cutover(args,receipts,files,run,info,ROOT,SRC)))
+        return
     target=receipts/("update-"+args.source_commit[:12])
     if target.exists():raise SystemExit("Reconcile prior update")
     before=info();files={"gateway.py":BIN/"gateway.py","client.py":BIN/"client.py",**{"cockpit/"+n:WEB/n for n in ("panel.js","panel.css","index.html","manifest.json")}}
@@ -71,4 +86,5 @@ if __name__=="__main__":
     p=argparse.ArgumentParser()
     for n in ["source-commit","from-commit"]:p.add_argument("--"+n,required=True)
     p.add_argument("--machine-id");p.add_argument("--ci",action="store_true");p.add_argument("--apply",action="store_true")
+    p.add_argument("--maintenance",action="store_true",help="Controlled panel-only cutover with SQLite snapshots and code-only rollback")
     update(p.parse_args())
