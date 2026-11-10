@@ -2,8 +2,7 @@
 Description=Read-only provider observer socket
 [Socket]
 ListenStream=/var/lib/jp-migracao-revisao/core-model/observer.sock
-SocketUser=64681
-SocketGroup=64681
+ExecStartPost=/usr/bin/chown 64681:64681 /var/lib/jp-migracao-revisao/core-model/observer.sock
 SocketMode=0600
 RemoveOnStop=yes
 [Install]
