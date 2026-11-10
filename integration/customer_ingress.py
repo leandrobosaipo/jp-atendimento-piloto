@@ -17,6 +17,7 @@ import uuid
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1] / "channels"))
 from customer_identity import resolve
 from customer_planner import PlannerReservation, ReservationError
+from customer_plan import HeldPlanner, PlanHeld
 
 
 class Held(Exception):
@@ -258,20 +259,33 @@ def serve(config_path):
                     pathlib.Path(cfg["chatwoot_token_file"]).read_text().strip())
     app = Intake(cfg["db_file"], cfg, chat, directory, lookup)
     planner = PlannerReservation(cfg["reservations_db_file"], cfg["db_file"], chat)
+    manifest = pathlib.Path(cfg["asset_manifest_file"]).read_bytes()
+    assets = pathlib.Path(cfg["asset_dir"])
+    def asset_bytes(filename):
+        need(isinstance(filename, str) and pathlib.Path(filename).name == filename,
+             "invalid_asset_path")
+        path = assets / filename
+        need(not path.is_symlink() and path.is_file(), "invalid_asset_file")
+        return path.read_bytes()
+    held_plan = HeldPlanner(cfg["plans_db_file"], cfg["reservations_db_file"], chat,
+        manifest_bytes=manifest, manifest_sha256=cfg["asset_manifest_sha256"],
+        asset_bytes=asset_bytes,
+        selected_asset=cfg["selected_asset"])
     class Handler(http.server.BaseHTTPRequestHandler):
         def log_message(self, *_):
             pass
         def do_POST(self):
             try:
-                need(self.path in ("/inbound", "/reserve"), "wrong_path")
+                need(self.path in ("/inbound", "/reserve", "/plan"), "wrong_path")
                 supplied = self.headers.get("Authorization", "")
                 need(hmac.compare_digest(supplied.encode(), b"Bearer " + token), "unauthorized")
                 size = int(self.headers.get("Content-Length", "0"))
                 need(0 < size <= 1_400_000, "size_limit")
                 body = json.loads(self.rfile.read(size))
-                result = app.receive(body) if self.path == "/inbound" else planner.reserve(body)
+                result = (app.receive(body) if self.path == "/inbound" else
+                          planner.reserve(body) if self.path == "/reserve" else held_plan.prepare(body))
                 payload, status = json.dumps(result).encode(), 200
-            except (Held, ReservationError) as exc:
+            except (Held, ReservationError, PlanHeld) as exc:
                 payload, status = json.dumps({"status": "held", "reason": str(exc)}).encode(), 409
             except Exception:
                 payload, status = b'{"status":"held","reason":"outcome_unknown"}', 503
