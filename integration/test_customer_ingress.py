@@ -7,7 +7,8 @@ import tempfile
 import unittest
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
-from customer_ingress import Chatwoot, Intake, Held, digest, receipt_id
+from customer_ingress import Chatwoot, Intake, Held, digest, receipt_id, process_channel
+from customer_ingress import native_sender
 from customer_planner import PlannerReservation, ReservationError
 
 
@@ -150,6 +151,78 @@ class IngressTest(unittest.TestCase):
         with self.assertRaises(Held):
             self.app.receive(bad)
         self.assertEqual(self.chat.incoming_calls, 0)
+
+    def test_bidirectional_instance_native_link(self):
+        lid = "100000001@lid"
+        proof = {"instance": INSTANCE, "paused": False,
+                 "forward": {KNOWN: lid}, "reverse": {lid: KNOWN}}
+        self.app.bindings = lambda: proof
+        def linked(sender, alt=None):
+            body = self.event(sender, native="LINKED001")
+            raw = json.loads(base64.b64decode(body["raw_base64"]))
+            if alt is not None:
+                raw["data"]["key"]["remoteJidAlt"] = alt
+            encoded = json.dumps(raw, separators=(",", ":")).encode()
+            return {**body, "raw_base64": base64.b64encode(encoded).decode(),
+                    "record_id": receipt_id(INSTANCE, encoded)}
+        first = self.app.receive(linked(lid, KNOWN))
+        self.assertEqual(first["state"], "ready")
+        self.assertEqual((first["workflow"], first["execution"]), ("fixture-wf", "101"))
+        self.assertEqual(self.app.receive(linked(lid, KNOWN)), first)
+        self.assertEqual(self.chat.incoming_calls, 1)
+        for changed in (
+            {**proof, "paused": True},
+            {**proof, "instance": "other"},
+            {**proof, "reverse": {}},
+            {**proof, "reverse": {lid: NEW}},
+            {**proof, "forward": {KNOWN: lid, NEW: lid}},
+        ):
+            with self.assertRaises(Held):
+                native_sender({"key": {"fromMe": False, "remoteJid": lid,
+                                       "remoteJidAlt": KNOWN}}, INSTANCE, changed)
+        with self.assertRaises(Held):
+            native_sender({"key": {"fromMe": False, "remoteJid": lid,
+                                   "remoteJidAlt": NEW}}, INSTANCE, proof)
+        with self.assertRaises(Held):
+            native_sender({"key": {"fromMe": False, "remoteJid": "123@g.us"}}, INSTANCE, proof)
+
+    def test_claimed_collector_handoff_keeps_execution_and_never_sends(self):
+        lid = "100000001@lid"
+        proof = {"instance": INSTANCE, "instance_id_hash": "a" * 64, "paused": False,
+                 "forward": {KNOWN: lid}, "reverse": {lid: KNOWN}}
+        self.config.update(channel_epoch="12345678-1234-1234-1234-123456789abc",
+                           channel_workflow="candidatewf", native_instance_id_hash="a" * 64)
+        self.app.bindings = lambda: proof
+        body = self.event(lid, native="LINKED002")
+        raw = base64.b64decode(body["raw_base64"])
+        proof.update(epoch=self.config["channel_epoch"], record_id=body["record_id"])
+        self.config["channel_fixture_records"] = [body["record_id"]]
+        class FakeHeldPlan:
+            calls = 0
+            def prepare(self, values):
+                self.calls += 1
+                return {"status": "prepared_held", "parts": [1, 2], "transport_attempts": 0}
+        plan = FakeHeldPlan()
+        def call(execution):
+            return process_channel(raw, body["record_id"], "candidatewf", execution,
+                                   self.config["channel_epoch"], self.config,
+                                   self.app, self.planner, plan)
+        first = call("701")
+        self.assertEqual((first["status"], first["plan"], first["execution"], first["first_execution"]),
+                         ("retained", "prepared_held", "701", "701"))
+        retry = call("702")
+        self.assertEqual((retry["intake"], retry["reservation"], retry["first_execution"]),
+                         (first["intake"], first["reservation"], "701"))
+        self.assertEqual(retry["execution"], "702")
+        self.assertEqual(self.chat.incoming_calls, 1)
+        self.assertEqual(self.chat.outgoing_calls, 0)
+        self.app.bindings = lambda: {**proof, "reverse": {}}
+        held = call("703")
+        self.assertEqual((held["status"], held["reason"]),
+                         ("retained", "native_identity_unverified"))
+        self.assertEqual(self.chat.incoming_calls, 1)
+        self.app.bindings = lambda: {**proof, "record_id": "0" * 64}
+        self.assertEqual(call("704")["reason"], "native_identity_unverified")
 
     def test_reservation_rejects_wrong_chatwoot_ids(self):
         row = self.app.receive(self.event(KNOWN))
