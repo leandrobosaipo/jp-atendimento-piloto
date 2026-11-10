@@ -33,7 +33,7 @@ def dell_reader(queue_path, workflow, epoch, instance):
     spec.loader.exec_module(source)
     def directory():
         cfg = _private_config("/etc/atendimento-piloto-integracao/appbarber-readonly.json")
-        return source.official(cfg, "clients", {})
+        return cfg["source_generation"], source.official(cfg, "clients", {})
     def lookup(numbers):
         if len(numbers) != 1 or not re.fullmatch(r"55[1-9][0-9]{9,10}", numbers[0]):
             raise ClaimClosed("individual_lookup_required")
@@ -72,10 +72,12 @@ class ClaimedDirectory:
     def decision(self, resolve, address_hash, record, workflow, execution, epoch):
         scope = (record, workflow, execution, epoch)
         self.check(*scope)
-        directory = self.directory()
+        generation, directory = self.directory()
+        if type(generation) is not int or generation <= 0:
+            raise ClaimClosed("unverified_directory_generation")
         def lookup(numbers):
             self.check(*scope)
             return self.lookup(numbers)
         decision = resolve(directory, [address_hash], lookup)[address_hash]
         self.check(*scope)
-        return decision
+        return decision, generation, len(directory["data"])

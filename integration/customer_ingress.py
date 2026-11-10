@@ -160,6 +160,11 @@ class Intake:
             for name in ("workflow", "execution"):
                 if name not in columns:
                     db.execute(f"ALTER TABLE intakes ADD COLUMN {name} TEXT")
+            if self.claimed is not None:
+                db.execute("""CREATE TABLE IF NOT EXISTS intake_identity_reads (
+                    request TEXT PRIMARY KEY REFERENCES intakes(request), record TEXT NOT NULL,
+                    execution TEXT NOT NULL, generation INTEGER NOT NULL, directory_count INTEGER NOT NULL,
+                    decision TEXT NOT NULL, checked_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)""")
         fd = os.open(pathlib.Path(self.db_path).resolve().parent,
                      os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
         try:
@@ -281,8 +286,12 @@ class Intake:
             if self.claimed is None:
                 decision = resolve(self.directory(), [address_hash], self.lookup)[address_hash]
             else:
-                decision = self.claimed.decision(resolve, address_hash, body["record_id"],
+                decision, generation, count = self.claimed.decision(resolve, address_hash, body["record_id"],
                     body["workflow_id"], str(body["execution_id"]), claim_epoch)
+                with self.db() as db:
+                    db.execute("""INSERT INTO intake_identity_reads
+                        (request,record,execution,generation,directory_count,decision) VALUES(?,?,?,?,?,?)""",
+                        (request_id,body["record_id"],str(body["execution_id"]),generation,count,decision["status"]))
             identity = json.dumps(decision, sort_keys=True, separators=(",", ":"))
             contact, source, conv = self._contact(address_hash, identity)
             owner = self._check_conversation(conv, contact)

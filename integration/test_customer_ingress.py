@@ -247,8 +247,9 @@ class IngressTest(unittest.TestCase):
         reads = []
         def directory():
             reads.append(1)
-            return self.directory
-        self.app.claimed = ClaimedDirectory(path, wf, epoch, directory, lambda n:self.fail("unexpected lookup"))
+            return 5, self.directory
+        claimed = ClaimedDirectory(path, wf, epoch, directory, lambda n:self.fail("unexpected lookup"))
+        self.app = Intake(self.app.db_path, self.config, self.chat, None, None, claimed=claimed)
         def event(n, address):
             body = self.event(address,"CLAIMED00"+str(n))
             packet = json.loads(base64.b64decode(body["raw_base64"]))
@@ -276,10 +277,12 @@ class IngressTest(unittest.TestCase):
         self.assertEqual(plan.mode,"public_information")
         with self.app.db() as db:
             self.assertEqual(db.execute("SELECT reason FROM intakes WHERE state='held'").fetchall()[0][0],"ambiguous_customer_match")
+            self.assertEqual(list(map(tuple,db.execute("SELECT execution,generation,decision FROM intake_identity_reads ORDER BY execution"))),
+                             [("1",5,"ambiguous_customer_match"),("2",5,"ambiguous_customer_match"),("3",5,"no_customer_match")])
         raw,record = event(4,NEW)
         def close_while_reading():
             queue.execute("UPDATE owner SET epoch=''");queue.commit()
-            return self.directory
+            return 5, self.directory
         self.app.claimed.directory = close_while_reading
         with self.assertRaises(ClaimClosed):
             submit((raw,record),4)
