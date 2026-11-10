@@ -1,0 +1,10 @@
+// Isolated inbound-only workflow. It has no outgoing Chatwoot or WhatsApp node.
+const {createRequire}=require('node:module');
+const {workflow,node,trigger,newCredential}=createRequire('/usr/local/lib/node_modules/n8n/package.json')('@n8n/workflow-sdk');
+const cfg=JSON.parse(require('node:fs').readFileSync(0,'utf8'));
+if(!/^http:\/\/172\.18\.0\.1:19736$/.test(cfg.bridge))throw Error('Wrong isolated bridge');
+const cred=k=>({httpHeaderAuth:newCredential(cfg[k].name,cfg[k].id)});
+const hook=trigger({type:'n8n-nodes-base.webhook',version:2.1,config:{name:'Isolated JP customer intake',position:[0,0],credentials:cred('hook'),parameters:{httpMethod:'POST',path:'pilot-customer-ingress-v1',authentication:'headerAuth',responseMode:'lastNode',responseData:'firstEntryJson',options:{}}}});
+const admit=node({type:'n8n-nodes-base.httpRequest',version:4.3,config:{name:'Materialize inbound in isolated Chatwoot',position:[260,0],credentials:cred('adapter'),retryOnFail:false,parameters:{method:'POST',url:cfg.bridge+'/inbound',authentication:'genericCredentialType',genericAuthType:'httpHeaderAuth',sendBody:true,specifyBody:'json',jsonBody:'={{ {raw_base64:$json.body.raw_base64,record_id:$json.body.record_id,workflow_id:$workflow.id,execution_id:$execution.id} }}',options:{timeout:85000,redirect:{redirect:{followRedirects:false}}}}}});
+const w=workflow('pilot-customer-ingress-v1','Isolated JP customer intake').add(hook).to(admit).toJSON();
+process.stdout.write(JSON.stringify({name:'Isolated JP customer intake',nodes:w.nodes,connections:w.connections,settings:{executionOrder:'v1',timezone:'America/Cuiaba',saveDataSuccessExecution:'none',saveDataErrorExecution:'none',saveExecutionProgress:false,saveManualExecutions:false}}));

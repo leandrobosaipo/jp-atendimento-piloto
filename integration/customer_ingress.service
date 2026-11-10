@@ -1,0 +1,19 @@
+[Unit]
+Description=Isolated JP customer inbound materialization pilot
+After=network-online.target atendimento-piloto-integracao.service
+
+[Service]
+Type=simple
+User=root
+Group=root
+UMask=0077
+WorkingDirectory=/usr/local/libexec/atendimento-piloto-customer-ingress
+ExecStart=/usr/bin/python3 -B /usr/local/libexec/atendimento-piloto-customer-ingress/integration/customer_ingress.py /etc/atendimento-piloto-customer-ingress/runtime.json
+Restart=no
+NoNewPrivileges=yes
+ProtectSystem=strict
+ReadWritePaths=/var/lib/atendimento-piloto-customer-ingress
+PrivateTmp=yes
+
+[Install]
+WantedBy=multi-user.target
