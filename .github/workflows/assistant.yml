@@ -25,6 +25,12 @@ jobs:
         run: |
           legacy=b9719fa557eab007979685aedaf698c4f60820d5
           git checkout --detach "$legacy"
+          # Install the historical panel alongside the integration version used on both sides of this panel-only test.
+          git restore --source="$GITHUB_SHA" --staged --worktree -- integration
+          if ! git diff --cached --quiet; then
+            git -c user.name='CI fixture' -c user.email='ci@example.invalid' commit -m 'Prepare isolated panel upgrade baseline'
+          fi
+          legacy=$(git rev-parse HEAD)
           sudo useradd --system --user-group --no-create-home delladmin
           sudo install -d -m 700 private/openai-inbox
           printf '%s' '{"version":"fixture","entries":[{"id":"sample","title":"Sample","source":"local","keywords":["sample"],"text":"Sample synthetic fact."}]}' | sudo tee private/openai-inbox/kb.json >/dev/null
