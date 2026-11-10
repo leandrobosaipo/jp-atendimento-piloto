@@ -1,0 +1,10 @@
+[Unit]
+Description=Restricted intent classification socket
+[Socket]
+ListenStream=/var/lib/jp-migracao-revisao/core-model/interpret.sock
+SocketUser=64681
+SocketGroup=64681
+SocketMode=0600
+RemoveOnStop=yes
+[Install]
+WantedBy=sockets.target

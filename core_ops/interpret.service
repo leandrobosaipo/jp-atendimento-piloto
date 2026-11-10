@@ -1,0 +1,19 @@
+[Unit]
+Description=Classify a message for the Central workflow using the existing AI budget
+[Service]
+User=atendimento-piloto-ai
+DynamicUser=yes
+StateDirectory=atendimento-piloto-ai
+StateDirectoryMode=0700
+Environment=CORE_UID=64681
+ExecStart=/usr/bin/python3 -E -s /usr/local/libexec/jp-core-model/classifier.py
+LoadCredential=provider-key:/etc/atendimento-piloto-ai/openai.key
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+CapabilityBoundingSet=
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+MemoryMax=96M
+TasksMax=8
+UMask=0077

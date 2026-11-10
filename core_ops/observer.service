@@ -1,0 +1,15 @@
+[Unit]
+Description=Read scoped provider identity for the Central
+[Service]
+DynamicUser=yes
+ExecStart=/usr/bin/python3 -I /usr/local/libexec/jp-core-model/observer.py
+LoadCredential=reader:/etc/jp-evolution-readonly/access.json
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+CapabilityBoundingSet=
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+MemoryMax=64M
+TasksMax=4
+UMask=0077

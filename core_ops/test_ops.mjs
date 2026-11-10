@@ -1,0 +1,31 @@
+import assert from "node:assert/strict";
+import test from "node:test";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import {createHash,randomUUID} from "node:crypto";
+import {operational} from "./admission.mjs";
+import {records,resolveAttempt} from "./dispatch.mjs";
+const sha=s=>createHash("sha256").update(s).digest("hex");
+test("maintenance, ownership, distinct preflights, immutable attempt and close",async t=>{
+  const root=fs.mkdtempSync(path.join(os.tmpdir(),"central-"));t.after(()=>fs.rmSync(root,{recursive:true}));
+  fs.mkdirSync(root+"/admissions");
+  const token="a".repeat(40),epoch=randomUUID(),workflow="fixture001",execution="112";
+  function gate(mode){fs.writeFileSync(root+"/ownership.json",JSON.stringify({mode,epoch,owner:"fixture",roles:["clock"],until:new Date(Date.now()+60000)}));}
+  const prefix="/api/n8n/stages/",nodes={ordinary:prefix+"before-dispatch",forced:prefix+"before-dispatch",send:prefix+"send-initial",reactivate:prefix+"reactivation"};
+  let calls=0;const handle=operational({manifest:{clock:{workflow,nodes,forced:["forced"]}},secrets:{owner:"fixture",roles:{clock:token}},stateDir:root,
+    inner:async()=>{calls++;return {status:200,body:{execution_id:execution,ready:true,refreshed:true}};}});
+  const run=(node,body={},authorization="Bearer "+token)=>handle({workflow,execution,node,authorization,route:nodes[node],raw:Buffer.from(JSON.stringify(body))});
+  gate("maintenance");assert.equal((await run("ordinary")).status,423);gate("rehearsal");
+  assert.equal((await run("ordinary",{},"wrong")).status,403);assert.equal((await run("send")).status,409);
+  assert.equal((await run("ordinary")).status,200);assert.equal((await run("send")).status,200);
+  assert.equal((await run("reactivate")).status,409);assert.equal((await run("forced",{force:true})).status,200);
+  assert.equal((await run("reactivate")).status,200);assert.equal((await run("reactivate")).status,409);gate("maintenance");
+  assert.equal((await run("ordinary")).status,423);assert.equal(calls,4);
+});
+test("new durable attempt requires exact destination and content, rejecting ambiguity",()=>{
+ const text="Fixture",number="1234567890",base={attempted_at:"2026-01-01",status:"delivery_unknown",source_message_id:"fake-in",kind:"send",attempt_id:"fake-a",destination_e164:"+"+number,content_sha256:sha(text)};
+ const rows=records({jp_reply_attempts:[base]});assert.equal(rows.length,1);assert.equal(resolveAttempt(new Set(),rows,"sendText",{text,number}),rows[0]);
+ for(const bad of [[new Set([rows[0].id]),rows,{text,number}],[new Set(),[...rows,...rows],{text,number}],[new Set(),rows,{text:"other",number}],[new Set(),rows,{text,number:number+"@lid"}]])
+   assert.throws(()=>resolveAttempt(bad[0],bad[1],"sendText",bad[2]));
+});
