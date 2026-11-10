@@ -2,6 +2,7 @@
 import hashlib
 from contextlib import contextmanager
 import json
+import os
 import pathlib
 import sqlite3
 import uuid
@@ -26,6 +27,12 @@ class PlannerReservation:
                 conversation INTEGER NOT NULL, message INTEGER NOT NULL, mode TEXT NOT NULL,
                 text_hash TEXT NOT NULL, state TEXT NOT NULL DEFAULT 'reserved',
                 created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)""")
+        parent = pathlib.Path(self.path).resolve().parent
+        fd = os.open(parent, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+        try:
+            os.fsync(fd)
+        finally:
+            os.close(fd)
 
     @contextmanager
     def db(self):

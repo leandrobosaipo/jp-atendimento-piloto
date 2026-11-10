@@ -5,6 +5,7 @@ import hashlib
 import hmac
 import http.server
 import json
+import os
 import pathlib
 import re
 import sqlite3
@@ -110,6 +111,12 @@ class Intake:
                 address_hash TEXT NOT NULL, raw_hash TEXT NOT NULL, text_hash TEXT NOT NULL,
                 state TEXT NOT NULL, reason TEXT, contact INTEGER, conversation INTEGER,
                 message INTEGER)""")
+        fd = os.open(pathlib.Path(self.db_path).resolve().parent,
+                     os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+        try:
+            os.fsync(fd)
+        finally:
+            os.close(fd)
 
     @contextmanager
     def db(self):
