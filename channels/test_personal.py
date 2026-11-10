@@ -2,7 +2,9 @@ import copy
 import tempfile
 import unittest
 from pathlib import Path
-from personal import Held, Personal, TEXT, run
+from personal import Held, INSTANCE, Personal, TEXT, run
+from bridge import Outbox
+from personal_ack import reconcile, sha
 
 PHONE = '+5511900000000'
 ID = 'FAKE-NATIVE-ID'
@@ -52,6 +54,24 @@ class PersonalTest(unittest.TestCase):
         self.row['status'] = 'DELIVERY_ACK'
         self.assertEqual(run('receipt', self.t, self.db), {'state':'delivered','id':ID})
         run('send', self.t, self.db)
+        self.assertEqual(len(self.calls), 1)
+
+    def test_collector_receipt_requires_both_mapping_directions(self):
+        run('send', self.t, self.db)
+        receipt = dict(instance=INSTANCE, event='messages.update', keyId=ID, fromMe=True,
+                       status='DELIVERY_ACK', record_id='a'*64, instance_id_hash='i',
+                       lid='bound-lid', at='2026-11-10T09:00:00Z')
+        mapping = dict(pn=sha(PHONE[1:]), reverse_pn=sha(PHONE[1:]),
+                       forward_lid='bound-lid', reverse_lid='bound-lid', instance_id_hash='i')
+        for key in mapping:
+            with self.assertRaises(Held):
+                reconcile(Outbox(self.db), self.t, {'receipt':receipt,'mapping':{**mapping,key:'other'}})
+        for key in ('keyId','fromMe','instance','status'):
+            with self.assertRaises(Held):
+                reconcile(Outbox(self.db), self.t, {'receipt':{**receipt,key:'other'},'mapping':mapping})
+        result = reconcile(Outbox(self.db), self.t, {'receipt':receipt,'mapping':mapping})
+        self.assertEqual(result['state'], 'delivered')
+        self.assertEqual(run('receipt', self.t, self.db)['id'], ID)
         self.assertEqual(len(self.calls), 1)
 
     def test_unknown_never_repeats(self):
