@@ -33,5 +33,6 @@ jobs:
           python3 integration/test_policy.py
           python3 integration/test_parts.py
           python3 integration/test_personal_intake.py
+          python3 channels/test_dispatch_contract.py
           node --check assistant_panel/cockpit/panel.js
           node --check integration/cockpit/app.js
