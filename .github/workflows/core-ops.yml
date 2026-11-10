@@ -1,7 +1,7 @@
 name: Core operational contracts
 on:
   push:
-    branches: ['codex/jp-runtime-operacional-dell', 'codex/jp-leituras-por-tarefa-dell']
+    branches: ['codex/jp-runtime-operacional-dell', 'codex/jp-leituras-por-tarefa-dell', 'codex/jp-permissoes-por-tarefa-dell']
 permissions: {contents: read}
 jobs:
   contracts:
@@ -13,5 +13,6 @@ jobs:
           python3 core_ops/test_classifier.py
           python3 core_ops/test_observer.py
           python3 core_ops/test_task_reads.py
+          python3 core_ops/test_effect_source.py
           for source in core_ops/*.mjs; do node --check "$source"; done
-          node --test core_ops/test_ops.mjs core_ops/test_task_reads.mjs
+          node --test core_ops/test_ops.mjs core_ops/test_task_reads.mjs core_ops/test_effect_guard.mjs

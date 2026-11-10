@@ -13,7 +13,9 @@ const env={...roles,TZ:"America/Cuiaba",JP_N8N_STAGE_MODE:"1",JP_LOCAL_API_HOST:
   JP_JOBS_N8N_CONFIG_FILE:"/ops-config/jobs.json",CORE_MANUAL_HOOK:secrets.syncHook,JP_N8N_MANUAL_WEBHOOK_URL:secrets.manualHook,
   JP_APPBARBER_RENEWAL_WORKER_TOKEN:config.worker,CORE_DISPATCH_SOCKET:"/dispatch/dispatch.sock",
   JP_INDIVIDUAL_CONFIRMATION_CONFIG_FILE:"/ops-config/individual.json",JP_MANUAL_CONTACT_CONFIG_FILE:"/ops-config/manual.json",
-  JP_N8N_STAGE_SEND_ENABLED:secrets.brokerEnabled===true?"1":"0",JP_N8N_STAGE_AGENDA_WRITE_ENABLED:"0",JP_REPLY_AUTOMATION_ENABLED:secrets.interpretation===true?"1":"0"};
+  JP_CONTACT_REGISTRATION_CONFIG_FILE:"/state/contact-effect-config.json",
+  JP_N8N_STAGE_SEND_ENABLED:secrets.brokerEnabled===true?"1":"0",JP_N8N_STAGE_AGENDA_WRITE_ENABLED:"0",
+  JP_REPLY_SCOPED_WRITE_ENABLED:secrets.agendaWriteEnabled===true?"1":"0",JP_REPLY_AUTOMATION_ENABLED:secrets.interpretation===true?"1":"0"};
 let renewalExecution=null;
 await startRenewal(config,env,()=>renewalExecution);
 const child=spawn(process.execPath,["--import","/ops-app/transport.mjs","/legacy/scripts/jp-evolution-local-api.mjs"],{env,stdio:"ignore"});
@@ -34,7 +36,7 @@ const server=http.createServer(async(req,res)=>{
     if(req.method==="GET"&&req.url==="/healthz"){
       const r=await fetch(innerUrl+"/healthz",{signal:AbortSignal.timeout(2000)});
       const owner=JSON.parse(fs.readFileSync(stateDir+"/ownership.json"));
-      return reply(r.ok?200:503,{ok:r.ok,mode:owner.mode,broker_configured:secrets.brokerEnabled===true,official_writes:false});
+      return reply(r.ok?200:503,{ok:r.ok,mode:owner.mode,broker_configured:secrets.brokerEnabled===true,official_writes:secrets.agendaWriteEnabled===true});
     }
     if(req.method!=="POST")return reply(404,{});
     const chunks=[];let bytes=0;for await(const b of req){bytes+=b.length;if(bytes>131072)return reply(413,{});chunks.push(b);}
