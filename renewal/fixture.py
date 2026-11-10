@@ -13,12 +13,13 @@ with tempfile.TemporaryDirectory() as temp:
     pub=subprocess.check_output(["openssl","pkey","-pubout"],input=pem)
     cfg=private/"config.json";cfg.write_text(json.dumps({"known_appointments":[{},{}],"generation":1,"public_key":pub.decode()}));cfg.chmod(0o444)
     scripts={
-    "jp-appbarber-login-worker.mjs":"""
-export async function loginWithBrowser({credentials,browserFactory,handoff,jobId}){
+    "test-login.mjs":"""
+export function recordReply(){throw Error('unexpected')}
+export async function loginWithProvider({credentials,browserFactory,handoff}){
  if(credentials.userid!=="synthetic"||credentials.password!=="fixture-only")throw Error("credentials_rejected");
  const b=await browserFactory.launch();try{const c=await b.newContext({});const p=await c.newPage();
  await p.setContent("<h1>Fixture</h1>");const png=await p.screenshot();
- await handoff.report({reason_code:"captcha_or_otp_required"});await handoff.frame({png_base64:png.toString("base64")});
+ await handoff.report({reason_code:"otp_required"});await handoff.frame({png_base64:png.toString("base64")});
  for(let i=0;i<100;i++){const r=await handoff.poll();if(r.action?.key==="Enter")return {origin:"https://sistema.appbarber.com.br",cookieHeader:"synthetic=value"};await new Promise(r=>setTimeout(r,100));}
  throw Error("human_timeout");}finally{await b.close();}
 }""","jp-appbarber-session-renewal.mjs":"""
@@ -26,7 +27,10 @@ export async function verifyCandidateSession({session,knownAppointments}){if(kno
 """}
     for n,s in scripts.items():
         f=legacy/n;f.write_text(s);f.chmod(0o444)
+    browser_fixture=Path(__file__).resolve().with_name('fixture-browser.mjs')
+    subprocess.run(['docker','run','--rm','--network','none','--read-only','--cap-drop=ALL','--tmpfs','/tmp:rw,size=160m','--memory','640m','--shm-size','96m','--pids-limit','160','--entrypoint','node','-v',str(browser_fixture)+':/opt/renewal/fixture-browser.mjs:ro',image,'fixture-browser.mjs'],check=True)
     args=["docker","run","-d","--rm","--network","none","--read-only","--cap-drop=ALL","--security-opt=no-new-privileges","--tmpfs","/tmp:rw,nosuid,nodev,size=160m","--memory","640m","--shm-size","96m","--pids-limit","160","-v",str(legacy)+":/legacy:ro","-v",str(private)+":/private:rw","-v",str(ipc)+":/ipc:rw",image]
+    args[-1:-1]=['-v',str(legacy/'test-login.mjs')+':/opt/renewal/login.mjs:ro']
     cid=subprocess.check_output(args,text=True).strip()
     class Conn(http.client.HTTPConnection):
         def connect(self):

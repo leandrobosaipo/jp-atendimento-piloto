@@ -3,7 +3,7 @@ import http from "node:http";
 import crypto from "node:crypto";
 import { chromium } from "playwright-core";
 import { action, routeDecision } from "./guard.mjs";
-import { loginWithBrowser } from "/legacy/jp-appbarber-login-worker.mjs";
+import { loginWithProvider, recordReply } from "./login.mjs";
 import { verifyCandidateSession } from "/legacy/jp-appbarber-session-renewal.mjs";
 
 process.umask(0o077);
@@ -14,8 +14,10 @@ if (!Array.isArray(known) || known.length<2 || !Number.isInteger(cfg.generation)
 const output="/private/verified-candidate.sealed.json";
 const candidatePresent=()=>fs.existsSync(output);
 let state=candidatePresent()?"verified_candidate":"idle", attempting=false, frame=null, pending=null;
-const permittedReason=new Set(["captcha_or_otp_required","establishment_selection_required"]);
-const safeFailures=new Set(["credentials_rejected","human_timeout","appbarber_identity_unverified","appbarber_source_incomplete","account_contract_action_required","account_plan_action_required","login_not_proven","human_review_required","browser_route_held","candidate_exists"]);
+const permittedReason=new Set(["otp_required","captcha_required"]);
+const safeFailures=new Set(["credentials_rejected","human_timeout","appbarber_identity_unverified","appbarber_source_incomplete","account_contract_action_required","account_plan_action_required","login_not_proven","human_review_required","browser_route_held","candidate_exists","login_script_unavailable","login_not_submitted","provider_result_unknown","establishment_selection_required","provider_account_verification","provider_rejected"]);
+const sentMarker="/private/official-auth-attempt.json";
+if(!candidatePresent() && fs.existsSync(sentMarker))state="prior_submission_held";
 function writeCandidate(session,identity) {
   if(candidatePresent())throw new Error("candidate_exists");
   const data=Buffer.from(JSON.stringify({origin:session.origin,cookieHeader:session.cookieHeader,source_generation:cfg.generation+1,source_verified_at:identity.verified_at,captured_at:new Date().toISOString()}));
@@ -33,6 +35,11 @@ function writeCandidate(session,identity) {
 let lastStart=0;
 async function authenticate(credentials){
   let browser;
+  const trace={sent:false,otpSent:false,code:null,hold:null,success:false};
+  const receipt=(event,metadata={})=>{
+    const fd=fs.openSync("/private/official-auth-events.ndjson","a",0o600);
+    try{fs.writeSync(fd,JSON.stringify({at:new Date().toISOString(),event,...metadata})+"\n");fs.fsyncSync(fd);}finally{fs.closeSync(fd);}
+  };
   try{
     const browserFactory={launch:async()=>{
       browser=await chromium.launch({executablePath:"/usr/bin/chromium",headless:true,args:["--disable-background-networking","--disable-component-update","--disable-sync"]});
@@ -40,12 +47,29 @@ async function authenticate(credentials){
         const ctx=await browser.newContext({...options,serviceWorkers:"block"});
         await ctx.route("**/*",async r=>{
           const q=r.request(),d=routeDecision(q.url(),q.method(),q.isNavigationRequest());
+          if(d==="auth"){
+            const otp=new URL(q.url()).pathname==="/php/auth_2FA.php";
+            if(otp ? trace.code!==8||trace.otpSent : trace.sent||fs.existsSync(sentMarker))return r.abort();
+            if(otp)trace.otpSent=true;
+            else{
+              const fd=fs.openSync(sentMarker,"wx",0o600);
+              try{fs.writeSync(fd,JSON.stringify({at:new Date().toISOString(),state:"dispatching"}));fs.fsyncSync(fd);}finally{fs.closeSync(fd);}
+              trace.sent=true;
+            }
+            receipt(otp?"otp_dispatching":"credential_dispatching");
+            try{
+              const response=await r.fetch({maxRedirects:0,timeout:20000,maxRetries:0});
+              if(response.status()===200)recordReply(trace,await response.json());else trace.hold="provider_result_unknown";
+              receipt(otp?"otp_response":"credential_response",{http:response.status(),code:Number.isInteger(trace.code)?trace.code:null,success:trace.success,hold:trace.hold});
+              return await r.fulfill({response});
+            }catch{trace.hold="provider_result_unknown";receipt("unknown");return r.abort().catch(()=>{});}
+          }
           if(d==="allow"){
             // Inspect the first response so a permitted request cannot follow
             // an unreviewed redirect to a different origin or application.
-            const response=await r.fetch({maxRedirects:0,timeout:20000});
-            if(response.status()>=300&&response.status()<400)return r.abort();
-            return r.fulfill({response});
+            try{const response=await r.fetch({maxRedirects:0,timeout:20000});
+              if(response.status()>=300&&response.status()<400)return r.abort();
+              return await r.fulfill({response});}catch{return r.abort().catch(()=>{});}
           }
           if(d==="landing")return r.fulfill({status:200,contentType:"text/html",body:"<!doctype html><title>Verificação do acesso</title>"});
           return r.abort();
@@ -59,12 +83,12 @@ async function authenticate(credentials){
       state=x.reason_code;
     },frame:async x=>{if(typeof x.png_base64!=="string"||x.png_base64.length>1600000)throw new Error("human_review_required");frame=x.png_base64;},
     poll:async()=>{const a=pending;pending=null;return {action:a};}};
-    const session=await loginWithBrowser({url:origin+"/login.php",credentials,browserFactory,handoff,jobId:crypto.randomUUID()});
+    const session=await loginWithProvider({credentials,browserFactory,handoff,trace});
     frame=null;pending=null;state="checking_identity";
     const proof=await verifyCandidateSession({session,knownAppointments:known});
     if(!proof?.identity||proof.identity.matched_count<2)throw new Error("appbarber_identity_unverified");
     writeCandidate(proof.session,proof.identity);state="verified_candidate";
-  }catch(e){state=safeFailures.has(e?.message)?e.message:"verification_failed";}
+  }catch(e){state=safeFailures.has(e?.message)?e.message:"verification_failed";receipt("held",{state,credential_dispatching:trace.sent});}
   finally{frame=null;pending=null;attempting=false;if(browser)await browser.close().catch(()=>{});}
 }
 const sock="/ipc/operator.sock";
@@ -79,10 +103,10 @@ const server=http.createServer(async(req,res)=>{
   if(req.method!=="POST"||req.url!=="/operate")return reply(404,{status:"rejected"});
   const b=[];let n=0;for await(const c of req){n+=c.length;if(n>4096)return reply(413,{status:"rejected"});b.push(c);}
   const x=JSON.parse(Buffer.concat(b));
-  if(x.op==="status")return reply(200,{state,attempting,frame:permittedReason.has(state)?frame:null});
+  if(x.op==="status")return reply(200,{state,attempting,submission_locked:fs.existsSync(sentMarker),frame:permittedReason.has(state)?frame:null});
   if(x.op==="action"&&attempting&&permittedReason.has(state)&&!pending){pending=action(x);return reply(200,{state:"accepted"});}
   if(x.op!=="start")return reply(400,{state:"invalid_request"});
-  if(attempting||candidatePresent()||Date.now()-lastStart<60000)return reply(409,{state:candidatePresent()?"verified_candidate":"busy_or_recent"});
+  if(attempting||candidatePresent()||fs.existsSync(sentMarker)||Date.now()-lastStart<60000)return reply(409,{state:candidatePresent()?"verified_candidate":"busy_or_recent"});
   if(typeof x.userid!=="string"||x.userid.length<1||x.userid.length>254||typeof x.password!=="string"||x.password.length<1||x.password.length>512)return reply(400,{state:"credentials_required"});
   lastStart=Date.now();attempting=true;state="authenticating";
   void authenticate({userid:x.userid,password:x.password});return reply(202,{state});

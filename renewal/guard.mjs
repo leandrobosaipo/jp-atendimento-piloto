@@ -8,11 +8,13 @@ export function routeDecision(raw, method, navigation = false) {
   if (url.protocol !== "https:" || url.username || url.password || url.port) return "deny";
   if (url.origin === origin) {
     if (method === "GET" && navigation && ["/", "/index.php"].includes(url.pathname)) return "landing";
-    if (method === "GET" && url.pathname === "/login.php") return "allow";
-    if (method === "POST" && url.pathname === "/php/auth.php") return "allow";
+    if (method === "GET" && url.pathname === "/login.php" && !url.search) return "allow";
+    if (method === "POST" && !url.search && ["/php/auth_v2.php","/php/auth_2FA.php"].includes(url.pathname)) return "auth";
     if (method === "GET" && !navigation && /\.(?:js|css|png|svg|jpg|gif|ico|webp|woff2?|ttf)$/i.test(url.pathname)) return "allow";
     return "deny";
   }
+  if(method==="GET" && !navigation && !url.search && url.hostname==="d3verit7xckkza.cloudfront.net" &&
+      ["/js/jquery.min.js","/js/bootstrap.min.js","/js/plugins/sweetalert/sweet-alert.min.js"].includes(url.pathname)) return "allow";
   const captcha = (
     ["www.google.com", "www.recaptcha.net", "www.gstatic.com"].includes(url.hostname) && url.pathname.startsWith("/recaptcha/") ||
     url.hostname === "challenges.cloudflare.com" && /^\/(turnstile|cdn-cgi\/challenge-platform)\//.test(url.pathname)

@@ -3,7 +3,7 @@ RUN apk add --no-cache chromium font-noto
 WORKDIR /opt/renewal
 COPY package.json package-lock.json ./
 RUN npm ci --omit=dev --ignore-scripts --no-audit && npm cache clean --force
-COPY worker.mjs guard.mjs ./
+COPY worker.mjs guard.mjs login.mjs ./
 ENV HOME=/tmp LANG=C.UTF-8
 USER 65532:65532
 ENTRYPOINT ["node","worker.mjs"]
