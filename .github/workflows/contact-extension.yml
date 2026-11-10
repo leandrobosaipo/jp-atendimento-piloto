@@ -1,0 +1,15 @@
+name: Isolated contact extension
+on:
+  push:
+    paths: ['contact_extension/**', 'core_ops/effect_source.py', '.github/workflows/contact-extension.yml']
+permissions: {contents: read}
+jobs:
+  contact:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 4
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+      - run: |
+          python3 contact_extension/test_issue.py
+          python3 core_ops/test_effect_source.py
+          sudo unshare --net -- setpriv --reuid="$(id -u)" --regid="$(id -g)" --clear-groups --no-new-privs node contact_extension/test.cjs

@@ -22,6 +22,13 @@ def lockfile(f,obj):
     finally:os.close(directory)
 def secure(p):
     st=p.stat();need(p.is_file() and not p.is_symlink() and st.st_uid==0 and not st.st_mode&0o022);return read(p)
+def contact_headers(key,body):
+    need(isinstance(key,str) and re.fullmatch(r'[a-f0-9]{64}',key))
+    path=CF/'contact-permits'/(key+'.json')
+    grant=secure(path);need(not path.stat().st_mode&0o077)
+    need(grant['task']==key and grant['bodySha']==digest(body) and 0<grant['until']-time.time()<=300)
+    need(re.fullmatch(r'[a-f0-9]{64}',grant['secret']))
+    return {'X-Contact-Task':key,'X-Contact-Permit':grant['secret']}
 class NoRedirect(urllib.request.HTTPRedirectHandler):
     def redirect_request(self,*a):return None
 def provider(config,op,body):
@@ -30,6 +37,7 @@ def provider(config,op,body):
         c=secure(CF/'contact-origin.json');origin=c['origin'];u=urllib.parse.urlsplit(origin)
         need(u.scheme=='https' and origin=='https://'+u.hostname and c['instance']==body['instance'])
         headers={'Authorization':'Bearer '+c['token'],'Content-Type':'application/json'}
+        if op=='contact':headers.update(contact_headers(config.get('contact_task'),body))
         if c.get('accessId') and c.get('accessSecret'):headers.update({'CF-Access-Client-Id':c['accessId'],'CF-Access-Client-Secret':c['accessSecret']})
         data=json.dumps(body).encode();url=origin+PATH[op]
     else:
@@ -120,7 +128,7 @@ def execute(root,audit,cfg,msg,upstream=provider):
         latest=secure(CF/'mode.json');need(latest.get('mode')=='official' and latest.get('allowed',{}).get(op) is True)
         fresh=secure(Path('/etc/atendimento-piloto-integracao/appbarber-readonly.json'))
         need(fresh['source_generation']==cfg['source_generation']==secure(root/'ops-config/effect-generation.json')['generation'])
-    result=upstream(cfg,'confirm' if op=='confirm_created' else op,b)
+    result=upstream({**cfg,'contact_task':key} if op=='contact' else cfg,'confirm' if op=='confirm_created' else op,b)
     record={'at':int(time.time()),'result_digest':digest(result),'domain_readback_required':True}
     if op=='create' and isinstance(result,dict):
         rows=result.get('data')
