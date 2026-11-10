@@ -1,0 +1,13 @@
+import assert from "node:assert/strict";
+import {routeDecision,action} from "./guard.mjs";
+const o="https://sistema.appbarber.com.br";
+assert.equal(routeDecision(o+"/login.php","GET",true),"allow");
+assert.equal(routeDecision(o+"/php/auth.php","POST"),"allow");
+assert.equal(routeDecision(o+"/index.php","GET",true),"landing");
+for(const [path,method] of [["/pages/actions/gravaAgendamento.php","POST"],["/php/auth.php","PUT"],["/login.php","POST"],["/billing/contract","GET"],["/assets/a.js","POST"]])assert.equal(routeDecision(o+path,method,true),"deny");
+assert.equal(routeDecision("https://sistema.appbarber.com.br.malicious.invalid/login.php","GET"),"deny");
+assert.equal(routeDecision("https://www.google.com/recaptcha/api2/reload","POST"),"allow");
+assert.throws(()=>action({action:"click",x:1024,y:20}));
+assert.throws(()=>action({action:"press",key:"F12"}));
+assert.deepEqual(action({action:"press",key:"Enter"}),{action:"press",key:"Enter"});
+console.log("route and interaction restrictions passed");
