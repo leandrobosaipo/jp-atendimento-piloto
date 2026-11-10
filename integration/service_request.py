@@ -2,6 +2,7 @@
 import datetime as dt
 import hashlib
 import json
+import os
 import re
 import uuid
 from pathlib import Path
@@ -50,10 +51,13 @@ def installed(cfg):
     from provider import query
     from customer_ingress import Chatwoot
     # Reuse the same confined official reader and signed JP knowledge gateway.
+    def ask(payload):
+        key=(Path(os.environ["CREDENTIALS_DIRECTORY"])/"integration-hmac").read_bytes().strip()
+        need(len(key)>=32,"context_key_unavailable")
+        return ai_socket(payload,key)
     def resolve(question,request,occasion):
         source=_private_config("/etc/atendimento-piloto-integracao/appbarber-readonly.json")
-        key=json.loads(Path("/run/credentials/atendimento-piloto-integracao.service/runtime").read_bytes())["hmac"].encode()
-        return decide(question,request,occasion,source,query,lambda payload:ai_socket(payload,key))
+        return decide(question,request,occasion,source,query,ask)
     def team_note(row,question,reason):
         conf=_private_config(cfg["team_configuration"])
         api=Chatwoot(conf["account"],conf["inbox"],conf["channel"],conf["token"])
