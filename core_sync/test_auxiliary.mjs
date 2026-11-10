@@ -10,7 +10,7 @@ function fixture(scenario){
 test("batch denial preserves the capability and rejects a different execution",()=>{
   const {plan,state}=fixture("batch"),r="/api/confirmation-batch/run",body={execution_id:"10",job_id:"fixture-batch",capability:plan.capability};
   checkRequest(plan,r,body,"10");assert.throws(()=>checkRequest(plan,r,body,"11"));
-  assert.deepEqual(checkResult(plan,r,{status:409},{error:"n8n_send_gate_disabled"},state),{gate:"n8n_send_gate_disabled",batch_unconsumed:true});
+  assert.deepEqual(checkResult(plan,r,{status:409},{error:"n8n_send_gate_disabled"},state),{gate:"n8n_send_gate_disabled",batch_unconsumed:true,selected_queued:1});
   state.jp_jobs[0].capability_consumed_at="unexpected";assert.throws(()=>checkResult(plan,r,{status:409},{error:"n8n_send_gate_disabled"},state));
 });
 test("registration keeps unresolved writes and requires a disabled update in the fresh case",()=>{

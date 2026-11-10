@@ -50,6 +50,11 @@ const api=http.createServer(async(req,res)=>{
     if(exp.stage==="before-dispatch"){
       const s=read("state.json"),job=s.jp_jobs.find(j=>j.job_id===o.job_id);
       assert(o.ready===true&&o.refreshed===true&&job?.status==="completed"&&job.execution_id===ex&&job.source_checked_at===o.checked_at&&read("candidates.json").generated_at===o.checked_at);
+      if(plan.scenario==="batch"){
+        const selected=s.jp_jobs.find(j=>j.job_id==="fixture-batch").items[0];
+        assert(read("candidates.json").candidates.some(c=>c.candidate_id===selected.candidate_id&&c.appointment_id===selected.appointment_id));
+        receipt.selected_candidate_refreshed=true;
+      }
     }
     if(["send-initial","send-reminders","reconcile-responses"].includes(exp.stage))assert(o.status==="paused"&&o.attempted===0);
     if(exp.stage==="reactivation-due")receipt.pending=o[0].pending;

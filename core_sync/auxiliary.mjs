@@ -15,7 +15,12 @@ export function seed(plan,state,write,dir){
   assert(Object.hasOwn(scenarios,s)&&typeof cap==="string"&&cap.length>=32);
   assert.deepEqual(plan.nodes.map(n=>n.path),scenarios[s]);
   const env={JP_N8N_BATCH_WORKFLOW_ID:workflow,JP_BRAND_N8N_WORKFLOW_ID:s.startsWith("brand")?workflow:"fixture-unused"};
-  if(s==="batch")state.jp_jobs.push({job_id:"fixture-batch",type:"confirmation_batch",operator:"fixture",status:"queued",started_at:stamp,capability_hash:sha(cap),capability_expires_at:expires,capability_consumed_at:null,items:[]});
+  if(s==="batch"){
+    const snapshot={candidate_id:"jp-semana-9001",client_code:"1",kind:"appointment_confirmation",appointment_id:"9001",appointment_date:"12/11/2026",appointment_time:"11:00",service:"Manutenção Prótese Capilar",professional:"Teste",destination_e164:null};
+    const text="Texto de prova, sem destino.";
+    state.jp_jobs.push({job_id:"fixture-batch",type:"confirmation_batch",operator:"fixture",status:"queued",started_at:stamp,capability_hash:sha(cap),capability_expires_at:expires,capability_consumed_at:null,
+      items:[{candidate_id:snapshot.candidate_id,appointment_id:snapshot.appointment_id,destination_e164:null,text,text_sha256:sha(text),snapshot,status:"queued"}]});
+  }
   if(s.startsWith("contact")){
     const row={request_id:"fixture-contact",client_code:"1",source_message_id:"fake-accepted",destination_e164:"+5500000000000",status:"pending",created_at:stamp,capability:cap,capability_hash:sha(cap),capability_expires_at:expires,task_id:"fixture-task"};
     state.contact_registration_requests=[row];
@@ -46,7 +51,8 @@ export function checkResult(plan,route,r,obj,state){
   const scenario=plan.scenario;
   if(route==="/api/confirmation-batch/run"){
     const job=state.jp_jobs.find(j=>j.job_id==="fixture-batch");assert(r.status===409&&obj.error==="n8n_send_gate_disabled"&&job.status==="queued"&&!job.capability_consumed_at);
-    return {gate:obj.error,batch_unconsumed:true};
+    assert(job.items.length===1&&job.items[0].status==="queued"&&job.items[0].text_sha256===sha(job.items[0].text));
+    return {gate:obj.error,batch_unconsumed:true,selected_queued:1};
   }
   assert(r.ok);
   if(route.endsWith("/before-dispatch"))return {};
