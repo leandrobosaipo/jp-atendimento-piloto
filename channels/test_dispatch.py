@@ -35,7 +35,28 @@ class DeliveryTests(unittest.TestCase):
 
     def service(self):
         return Dispatcher(self.box, self.grant, self.exchange,
-                          verify_number=lambda n,j:self.assertEqual(n + "@s.whatsapp.net",j), clock=lambda:self.now)
+                          verify_number=lambda n,j:n+"@s.whatsapp.net", clock=lambda:self.now)
+
+    def test_provider_verified_ninth_digit_survives_replay(self):
+        body=self.body()
+        number="5511960000001"
+        body["payload"]["number"]=number
+        self.jid=number+"@s.whatsapp.net"
+        canonical=number[:4]+number[5:]+"@s.whatsapp.net"
+        self.sender.verify_number=lambda *_:"551160000099@s.whatsapp.net"
+        with self.assertRaises(Held):
+            self.sender.deliver(body,self.roles)
+        self.assertEqual(self.calls,[])
+        self.sender.verify_number=lambda *_:canonical
+        def physical(path,payload):
+            self.assertEqual(payload["number"],canonical.split("@")[0])
+            self.calls.append(path)
+            return {"key":{"fromMe":True,"remoteJid":canonical,"id":"native-1"}}
+        self.sender.transport=physical
+        first=self.sender.deliver(body,self.roles)
+        self.assertEqual(first[1]["recipient_binding"],{"submitted":number,"canonical_jid":canonical,"basis":"native_lookup"})
+        self.assertEqual(first,self.service().deliver(body,self.roles))
+        self.assertEqual(len(self.calls),1)
 
     def body(self, media=False):
         op = "sendMedia" if media else "sendText"

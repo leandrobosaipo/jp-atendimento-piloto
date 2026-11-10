@@ -41,11 +41,26 @@ def validate_request(body, *, roles):
     return body
 
 
-def accepted_response(native, verified_recipient):
+def recipient_binding(submitted, verified_recipient):
+    """Called only with a destination returned for the submitted number by an independent native lookup."""
+    if verified_recipient == submitted + "@s.whatsapp.net":
+        return None
+    canonical = verified_recipient.removesuffix("@s.whatsapp.net")
+    need(verified_recipient == canonical+"@s.whatsapp.net","unverified_destination")
+    long,short=sorted((submitted,canonical),key=len,reverse=True)
+    need(re.fullmatch(r"55[0-9]{2}9[6-9][0-9]{7}",long) and short==long[:4]+long[5:], "unverified_destination")
+    return {"submitted":submitted,"canonical_jid":verified_recipient,"basis":"native_lookup"}
+
+
+def accepted_response(native, verified_recipient, submitted=None):
     """Use only after checking the HTTP response and independently binding the destination."""
     need(isinstance(verified_recipient, str) and re.fullmatch(r"[1-9][0-9]{7,14}@s\.whatsapp\.net", verified_recipient),
          "unverified_destination")
     key = native.get("key") if isinstance(native, dict) else None
     need(isinstance(key,dict) and key.get("fromMe") is True and key.get("remoteJid")==verified_recipient and
          isinstance(key.get("id"),str) and re.fullmatch(r"[A-Za-z0-9_-]{6,160}",key["id"]), "unverified_provider_result")
-    return {"status":"provider_accepted","key":{"id":key["id"],"fromMe":True,"remoteJid":verified_recipient}}
+    result={"status":"provider_accepted","key":{"id":key["id"],"fromMe":True,"remoteJid":verified_recipient}}
+    binding=recipient_binding(submitted,verified_recipient) if submitted else None
+    if binding:
+        result["recipient_binding"]=binding
+    return result

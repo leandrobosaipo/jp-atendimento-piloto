@@ -104,9 +104,11 @@ class Evolution:
             return json.loads(data)
 
     def verify(self, number, jid):
+        need(jid==number+"@s.whatsapp.net","unverified_native_identity")
         rows = self.post("/chat/whatsappNumbers/" + INSTANCE, {"numbers":[number]})
         need(isinstance(rows, list) and len(rows) == 1 and rows[0].get("exists") is True and
-             str(rows[0].get("number")) == number and rows[0].get("jid") == jid, "unverified_native_identity")
+             str(rows[0].get("number")) == number and isinstance(rows[0].get("jid"),str), "unverified_native_identity")
+        return rows[0]["jid"]
 
     def __call__(self, path, payload):
         need(path in ("/message/sendText/" + INSTANCE, "/message/sendMedia/" + INSTANCE), "invalid_native_path")

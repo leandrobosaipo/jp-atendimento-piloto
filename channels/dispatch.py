@@ -6,7 +6,7 @@ import time
 from zoneinfo import ZoneInfo
 
 from bridge import canonical, digest, need
-from dispatch_contract import INSTANCE, accepted_response, validate_request
+from dispatch_contract import INSTANCE, accepted_response, recipient_binding, validate_request
 from evolution import Fence
 
 
@@ -76,7 +76,7 @@ class Dispatcher:
                 if prev:
                     need((prev["source"],prev["role"],prev["body_hash"])==(source,role,body_hash),"attempt_conflict")
                     if prev["state"] in ("accepted","delivered","read"):
-                        return 201,accepted_response({"key":{"id":prev["native"],"fromMe":True,"remoteJid":prev["destination"]}},prev["destination"])
+                        return 201,accepted_response({"key":{"id":prev["native"],"fromMe":True,"remoteJid":prev["destination"]}},prev["destination"],payload["number"])
                     return 409,{"status":"delivery_unknown"}
                 now=int(self.clock())
                 owner=db.execute("SELECT owner FROM owner_epoch").fetchone()[0]
@@ -88,6 +88,11 @@ class Dispatcher:
                 if body["operation"]=="sendMedia":
                     raw=base64.b64decode(payload["media"],validate=True)
                     need(hashlib.sha256(raw).hexdigest() in grant["approved_asset_hashes"],"unapproved_asset")
+                self.check_budget(db,now,grant)
+                submitted=payload["number"]
+                jid=self.verify_number(submitted,jid)
+                need(isinstance(jid,str),"unverified_native_identity")
+                recipient_binding(submitted,jid)
                 db.execute("BEGIN IMMEDIATE")
                 pending=db.execute("SELECT 1 FROM dispatch_attempts WHERE destination=? AND state IN ('sending','unknown','accepted') LIMIT 1",(jid,)).fetchone()
                 need(not pending,"previous_delivery_unresolved")
@@ -97,13 +102,13 @@ class Dispatcher:
                     need(completed and completed["state"] in ("delivered","read") and completed["destination"]==jid and completed["source"]==source,"previous_part_unconfirmed")
                 need(not db.execute("SELECT 1 FROM dispatch_attempts WHERE source=? AND body_hash=?",(source,body_hash)).fetchone(),"duplicate_business_effect")
                 self.check_budget(db,now,grant)
-                self.verify_number(payload["number"], jid)
                 now=int(self.clock())
                 need(self.authorize(body,owner,now)==grant and grant["until"]>now,"dispatch_proof_changed")
                 self.check_budget(db,now,grant)
                 db.execute("INSERT INTO dispatch_attempts VALUES(?,?,?,?,?,?,?,'sending',NULL)",(attempt,source,role,body_hash,jid,owner,now))
             try:
-                reply=accepted_response(self.transport(body["native_path"],payload),jid)
+                native_payload={**payload,"number":jid.split("@")[0]}
+                reply=accepted_response(self.transport(body["native_path"],native_payload),jid,submitted)
                 with self.box.db() as db:
                     need(db.execute("UPDATE dispatch_attempts SET state='accepted',native=? WHERE attempt=? AND state='sending'",
                                     (reply["key"]["id"],attempt)).rowcount==1,"attempt_changed")
