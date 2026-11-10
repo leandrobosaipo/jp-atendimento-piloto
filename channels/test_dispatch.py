@@ -13,7 +13,7 @@ from uuid import uuid4
 from bridge import Held, Outbox, digest
 from dispatch import Dispatcher
 from dispatch_contract import INSTANCE
-from dispatch_service import Handler, Policy, Server
+from dispatch_service import Handler, Policy, Server, clear_stale_socket
 
 
 class DeliveryTests(unittest.TestCase):
@@ -130,6 +130,19 @@ class DeliveryTests(unittest.TestCase):
         again = self.service()
         self.assertEqual(again.deliver(self.body(),self.roles), (409,{"status":"delivery_unknown"}))
         self.assertEqual(self.calls,[])
+
+    def test_stable_bind_mount_on_restart(self):
+        path=self.path/"dispatch.sock"
+        inode=self.path.stat().st_ino
+        with socket.socket(socket.AF_UNIX,socket.SOCK_STREAM) as listener:
+            listener.bind(str(path))
+            path.chmod(0o660)
+            listener.listen(1)
+            with self.assertRaises(RuntimeError):
+                clear_stale_socket(path,os.getuid(),os.getgid())
+        clear_stale_socket(path,os.getuid(),os.getgid())
+        self.assertFalse(path.exists())
+        self.assertEqual(inode,self.path.stat().st_ino)
 
     def test_peer_proof_role_and_expiry(self):
         uid = os.getuid()

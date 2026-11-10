@@ -149,9 +149,30 @@ class Server(socketserver.UnixStreamServer):
         return connection, address
 
 
+def clear_stale_socket(path, uid, gid):
+    # The directory is also a bind mount in the core. Retain its inode on restart.
+    try:
+        info = path.lstat()
+    except FileNotFoundError:
+        return
+    need(stat.S_ISSOCK(info.st_mode) and info.st_uid==uid and info.st_gid==gid and
+         stat.S_IMODE(info.st_mode)==0o660, "unexpected_socket")
+    with socket.socket(socket.AF_UNIX,socket.SOCK_STREAM) as probe:
+        probe.settimeout(1)
+        try:
+            probe.connect(str(path))
+        except ConnectionRefusedError:
+            current=path.lstat()
+            need((current.st_dev,current.st_ino)==(info.st_dev,info.st_ino),"socket_changed")
+            path.unlink()
+            return
+        raise RuntimeError("dispatch_socket_busy")
+
+
 def main():
     os.umask(0o077)
     native, policy = Evolution(), Policy()
+    clear_stale_socket(SOCKET, 0, CORE_UID)
     with Server(str(SOCKET), Handler) as server:
         os.chown(SOCKET, 0, CORE_UID)
         os.chmod(SOCKET, 0o660)
