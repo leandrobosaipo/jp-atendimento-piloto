@@ -26,7 +26,8 @@ NATIVE = "inbound-001"
 TEXT = "Mensagem fictícia"
 OPENED = "2026-11-10T12:00:00Z"
 RECEIVED = "2026-11-10T12:00:02Z"
-INSTANCE_ID_HASH = "a" * 64
+INSTANCE_ID = "synthetic-instance-id"
+INSTANCE_ID_HASH = hashlib.sha256(INSTANCE_ID.encode()).hexdigest()
 
 
 def b64(value):
@@ -68,6 +69,9 @@ class JournalTest(unittest.TestCase):
             key["remoteJidAlt"] = alt
         body = {"instance": INSTANCE, "event": "MESSAGES_UPSERT", "data": {"key": key,
                 "messageTimestamp": stamp, "message": {"conversation": content}}}
+        return self._seal(body)
+
+    def _seal(self, body):
         raw = json.dumps(body, separators=(",", ":")).encode()
         meta = {"version": 1, "source": "evolution", "instance": INSTANCE, "receivedAt": RECEIVED,
                 "rawSha256": hashlib.sha256(raw).hexdigest(), "workflowId": None, "executionId": None}
@@ -82,6 +86,11 @@ class JournalTest(unittest.TestCase):
                         ("evolution", record_id + ".json", hashlib.sha256(sealed).hexdigest(), sealed))
         self.db.commit()
         return record_id
+
+    def _ack(self, *, status="DELIVERY_ACK", from_me=True, jid=LID, instance_id=INSTANCE_ID):
+        return self._seal({"instance": INSTANCE, "event": "MESSAGES_UPDATE", "data": {
+            "keyId": NATIVE, "fromMe": from_me, "status": status,
+            "remoteJid": jid, "instanceId": instance_id}})
 
     def reader(self, mapping=None, opened_at=OPENED):
         return JournalProofReader(self.journal, self.keyfile, expected_jid=JID,
@@ -138,6 +147,32 @@ class JournalTest(unittest.TestCase):
         for field in ("pn", "reverse_pn", "forward_lid", "reverse_lid", "instance_id_hash"):
             with self.assertRaises(Held):
                 self.reader({**mapping, field: "wrong"}).read_inbound(self.record_id, native_hash, TEXT)
+
+    def test_delivery_ack_requires_aead_identity_mapping_and_post_claim_time(self):
+        record = self._ack()
+        native_hash = hashlib.sha256(NATIVE.encode()).hexdigest()
+        phone_hash = hashlib.sha256(JID.split("@")[0].encode()).hexdigest()
+        lid_hash = hashlib.sha256(LID.encode()).hexdigest()
+        mapping = {"instance_id_hash": INSTANCE_ID_HASH, "pn": phone_hash,
+                   "reverse_pn": phone_hash, "forward_lid": lid_hash, "reverse_lid": lid_hash}
+        witness = self.reader().read_delivery_ack(record, native_hash,
+            claimed_at=OPENED, mapping=mapping, position=1)
+        self.assertEqual(witness["receipt"]["keyId"], NATIVE)
+        self.assertEqual(witness["receipt"]["status"], "DELIVERY_ACK")
+        for field in mapping:
+            with self.assertRaises(Held):
+                self.reader().read_delivery_ack(record, native_hash, claimed_at=OPENED,
+                                                mapping={**mapping, field: "wrong"}, position=1)
+        for claimed, id_hash in ((RECEIVED, native_hash), (OPENED, "0" * 64)):
+            with self.assertRaises(Held):
+                self.reader().read_delivery_ack(record, id_hash, claimed_at=claimed,
+                                                mapping=mapping, position=1)
+        for change in ({"status": "PENDING"}, {"from_me": False}, {"jid": JID},
+                       {"instance_id": "other"}):
+            bad = self._ack(**change)
+            with self.assertRaises(Held):
+                self.reader().read_delivery_ack(bad, native_hash, claimed_at=OPENED,
+                                                mapping=mapping, position=1)
 
 
 if __name__ == "__main__":

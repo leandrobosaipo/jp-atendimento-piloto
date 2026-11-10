@@ -102,10 +102,8 @@ class JournalProofReader:
              lid in ids and ids.issubset({self.expected_jid, lid}), "bidirectional_mapping_mismatch")
         return self.expected_jid
 
-    def read_inbound(self, record_id, native_id_sha256, text):
-        need(isinstance(record_id, str) and HEX.fullmatch(record_id) and
-             isinstance(native_id_sha256, str) and HEX.fullmatch(native_id_sha256) and
-             isinstance(text, str) and 0 < len(text) <= 4000, "inbound_query_invalid")
+    def _record(self, record_id):
+        need(isinstance(record_id, str) and HEX.fullmatch(record_id), "journal_record_id_invalid")
         _private_file(self.journal_path, read=False)
         _, key_bytes = _private_file(self.key_path)
         try:
@@ -130,8 +128,7 @@ class JournalProofReader:
                  meta.get("instance") == INSTANCE and meta.get("workflowId") is None and
                  meta.get("executionId") is None and isinstance(meta.get("rawSha256"), str) and
                  HEX.fullmatch(meta["rawSha256"]), "journal_envelope_scope_mismatch")
-            received = _instant(meta.get("receivedAt"))
-            need(received > self.opened_at, "inbound_before_test_open")
+            _instant(meta.get("receivedAt"))
             aad = json.dumps(meta, separators=(",", ":"), ensure_ascii=False).encode()
             iv, ciphertext, tag = (_b64(envelope.get(name)) for name in ("iv", "ciphertext", "tag"))
             need(len(iv) == 12 and len(tag) == 16, "journal_cipher_shape_invalid")
@@ -157,44 +154,94 @@ class JournalProofReader:
             envelopes = body if isinstance(body, list) else [body]
             need(envelopes and all(isinstance(item, dict) and item.get("instance") == INSTANCE for item in envelopes),
                  "journal_body_instance_mismatch")
-            matches = []
-            for item in envelopes:
-                need(str(item.get("event", "")).lower().replace("_", ".") == "messages.upsert",
-                     "journal_event_not_upsert")
-                data = item.get("data")
-                for message in data if isinstance(data, list) else [data]:
-                    if not isinstance(message, dict) or not isinstance(message.get("key"), dict):
-                        continue
-                    key = message["key"]
-                    native = key.get("id")
-                    if isinstance(native, str) and hashlib.sha256(native.encode()).hexdigest() == native_id_sha256:
-                        matches.append((message, key, native))
-            need(len(matches) == 1, "native_inbound_id_not_unique")
-            data, native_key, native_id = matches[0]
-            need(NATIVE_ID.fullmatch(native_id) and native_key.get("fromMe") is False and
-                 not native_key.get("participant"), "inbound_direction_or_id_invalid")
-            sender = self._sender(data, native_key)
-            message = data.get("message")
-            need(isinstance(message, dict), "inbound_message_missing")
-            content = message.get("conversation")
-            if content is None and isinstance(message.get("extendedTextMessage"), dict):
-                content = message["extendedTextMessage"].get("text")
-            need(isinstance(content, str) and content == text, "inbound_text_mismatch")
-            stamp = data.get("messageTimestamp")
-            need(type(stamp) in (int, float, str) and str(stamp).replace(".", "", 1).isdigit(),
-                 "native_timestamp_required")
-            value = float(stamp)
-            if value > 1e12:
-                value /= 1000
-            native_at = datetime.fromtimestamp(value, timezone.utc)
-            need(native_at > self.opened_at and native_at <= received + timedelta(seconds=60),
-                 "native_before_test_or_after_receipt")
             db.rollback()  # Ends only the read transaction; query_only prevents writes.
         finally:
             db.close()
+        return meta, envelopes
+
+    def read_inbound(self, record_id, native_id_sha256, text):
+        need(isinstance(native_id_sha256, str) and HEX.fullmatch(native_id_sha256) and
+             isinstance(text, str) and 0 < len(text) <= 4000, "inbound_query_invalid")
+        meta, envelopes = self._record(record_id)
+        received = _instant(meta["receivedAt"])
+        need(received > self.opened_at, "inbound_before_test_open")
+        matches = []
+        for item in envelopes:
+            need(str(item.get("event", "")).lower().replace("_", ".") == "messages.upsert",
+                 "journal_event_not_upsert")
+            data = item.get("data")
+            for message in data if isinstance(data, list) else [data]:
+                if not isinstance(message, dict) or not isinstance(message.get("key"), dict):
+                    continue
+                key = message["key"]
+                native = key.get("id")
+                if isinstance(native, str) and hashlib.sha256(native.encode()).hexdigest() == native_id_sha256:
+                    matches.append((message, key, native))
+        need(len(matches) == 1, "native_inbound_id_not_unique")
+        data, native_key, native_id = matches[0]
+        need(NATIVE_ID.fullmatch(native_id) and native_key.get("fromMe") is False and
+             not native_key.get("participant"), "inbound_direction_or_id_invalid")
+        sender = self._sender(data, native_key)
+        message = data.get("message")
+        need(isinstance(message, dict), "inbound_message_missing")
+        content = message.get("conversation")
+        if content is None and isinstance(message.get("extendedTextMessage"), dict):
+            content = message["extendedTextMessage"].get("text")
+        need(isinstance(content, str) and content == text, "inbound_text_mismatch")
+        stamp = data.get("messageTimestamp")
+        need(type(stamp) in (int, float, str) and str(stamp).replace(".", "", 1).isdigit(),
+             "native_timestamp_required")
+        value = float(stamp)
+        if value > 1e12:
+            value /= 1000
+        native_at = datetime.fromtimestamp(value, timezone.utc)
+        need(native_at > self.opened_at and native_at <= received + timedelta(seconds=60),
+             "native_before_test_or_after_receipt")
         return {"authenticated": True, "source": "authenticated_mac_collector", "instance": INSTANCE,
                 "event": "messages.upsert", "fromMe": False, "sender": sender,
                 "native_id": native_id, "record_id": record_id, "received_at": meta["receivedAt"], "text": content}
+
+    def read_delivery_ack(self, record_id, native_id_sha256, *, claimed_at, mapping, position):
+        """Authenticate one outbound ACK after the durable request claim."""
+        need(isinstance(native_id_sha256, str) and HEX.fullmatch(native_id_sha256) and
+             type(position) is int and position > 0 and isinstance(mapping, dict),
+             "delivery_query_invalid")
+        phone_hash = hashlib.sha256(self.expected_jid.split("@")[0].encode()).hexdigest()
+        lid_hash = mapping.get("forward_lid")
+        need(mapping.get("instance_id_hash") == self.expected_instance_id_hash and
+             mapping.get("pn") == mapping.get("reverse_pn") == phone_hash and
+             isinstance(lid_hash, str) and HEX.fullmatch(lid_hash) and
+             mapping.get("reverse_lid") == lid_hash, "delivery_mapping_invalid")
+        meta, envelopes = self._record(record_id)
+        need(_instant(meta["receivedAt"]) > _instant(claimed_at), "delivery_precedes_claim")
+        matches = []
+        for item in envelopes:
+            need(str(item.get("event", "")).lower().replace("_", ".") == "messages.update",
+                 "delivery_event_invalid")
+            data = item.get("data")
+            for update in data if isinstance(data, list) else [data]:
+                if not isinstance(update, dict):
+                    continue
+                key = update.get("key") if isinstance(update.get("key"), dict) else {}
+                native = update.get("keyId") or key.get("id")
+                if isinstance(native, str) and hashlib.sha256(native.encode()).hexdigest() == native_id_sha256:
+                    matches.append((update, key, native))
+        need(len(matches) == 1, "delivery_native_id_not_unique")
+        update, key, native = matches[0]
+        status = update.get("status") or (update.get("update") or {}).get("status")
+        jid = update.get("remoteJid") or key.get("remoteJid")
+        need(NATIVE_ID.fullmatch(native) and (update.get("fromMe") if "fromMe" in update else key.get("fromMe")) is True and
+             status in ("DELIVERY_ACK", "READ") and isinstance(update.get("instanceId"), str) and
+             hashlib.sha256(update["instanceId"].encode()).hexdigest() == self.expected_instance_id_hash and
+             isinstance(jid, str) and jid.endswith("@lid") and
+             hashlib.sha256(jid.encode()).hexdigest() == lid_hash,
+             "delivery_identity_or_status_invalid")
+        return {"authenticated": True, "source": "authenticated_mac_collector", "position": position,
+                "receipt": {"instance": INSTANCE, "event": "messages.update", "keyId": native,
+                            "fromMe": True, "status": status, "record_id": record_id,
+                            "lid": lid_hash, "at": meta["receivedAt"],
+                            "instance_id_hash": self.expected_instance_id_hash},
+                "mapping": mapping}
 
     def proof_only(self, record_id, native_id_sha256, text):
         proof = self.read_inbound(record_id, native_id_sha256, text)

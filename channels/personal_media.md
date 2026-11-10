@@ -101,6 +101,16 @@ o status de entrega continua vindo de recibo autenticado separado para cada
 posição. `source_main_sha`, identidade de runtime, proteção do remetente único
 e autorização da janela são gates do executor, fora deste módulo.
 
+Após uma captura nova do coletor e sua restauração íntegra, use
+`reader.read_delivery_ack(record_id, native_id_sha256, claimed_at=...,
+mapping=..., position=...)` para construir o testemunho da parte. O leitor
+autentica o envelope por AES-GCM e exige `messages.update`, ID nativo, direção
+de saída, `DELIVERY_ACK` ou `READ`, `instanceId`, JID LID, mapeamento PN↔LID e
+horário posterior ao claim. A consulta não confirma o conteúdo do WhatsApp;
+o Outbox distingue a base de conteúdo no recibo da parte. O ID do registro de
+ACK deve ser descoberto na captura atual pelo hash do ID nativo e conferido
+contra a fonte restaurada, sem confiar em um status isolado da API.
+
 Execute `TMPDIR=/private/tmp python3 channels/test_personal_media.py` no macOS;
 execute também `TMPDIR=/private/tmp python3 channels/test_personal_media_native.py`;
 e `TMPDIR=/private/tmp python3 channels/test_personal_media_journal.py`;
