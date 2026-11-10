@@ -5,7 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import {createHash,randomUUID} from "node:crypto";
 import {operational} from "./admission.mjs";
-import {records,resolveAttempt} from "./dispatch.mjs";
+import {acceptedKey,records,resolveAttempt} from "./dispatch.mjs";
 const sha=s=>createHash("sha256").update(s).digest("hex");
 test("maintenance, ownership, distinct preflights, immutable attempt and close",async t=>{
   const root=fs.mkdtempSync(path.join(os.tmpdir(),"central-"));t.after(()=>fs.rmSync(root,{recursive:true}));
@@ -42,4 +42,16 @@ test("reactivation intake binds its own durable receipt and source messages",()=
  const rows=x=>records({reactivation:{intake_runtime:{attempts:[x]}}});
  assert.ok(resolveAttempt(new Set(),rows(a),"sendText",{number,text}).id);
  assert.deepEqual(rows({...a,source_message_ids:[]}),[]);
+});
+test("Brazilian ninth digit only with the provider-bound receipt for this exact attempt",()=>{
+ const short="551168000001",long="5511968000001",jid=n=>n+"@s.whatsapp.net";
+ const response=(a,b)=>({status:"provider_accepted",key:{id:"fixture-a",fromMe:true,remoteJid:jid(b)},recipient_binding:{submitted:a,canonical_jid:jid(b),basis:"native_lookup"}});
+ const check=(a,o)=>acceptedKey({payload:{number:a}},o);
+ assert.ok(check(long,response(long,short)));assert.ok(check(short,response(short,long)));
+ const exact=response(long,long);delete exact.recipient_binding;assert.ok(check(long,exact));
+ const unproven=response(long,short);delete unproven.recipient_binding;assert.equal(check(long,unproven),false);
+ for(const bad of [response(short,short),response(long,"552168000001"),response(long,"551168000002"),response(long,"5511368000001")])assert.equal(check(long,bad),false);
+ const landline="551135000001",wrong=response("5511935000001",landline);assert.equal(check("5511935000001",wrong),false);
+ const lid=response(long,short);lid.key.remoteJid=short+"@lid";assert.equal(check(long,lid),false);
+ const altered=response(long,short);altered.recipient_binding.basis="normalized";assert.equal(check(long,altered),false);
 });

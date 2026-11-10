@@ -47,12 +47,23 @@ export function resolveAttempt(before,current,operation,payload){
       typeof payload.media==="string"&&payload.media.length<=22500000&&r.asset===sha(Buffer.from(payload.media,"base64"))&&r.caption===sha(payload.caption||"")));
   if(hits.length!==1)throw Error("unbound_native_attempt");return hits[0];
 }
+export function acceptedKey(input,out){
+  const submitted=input.payload.number,jid=out?.key?.remoteJid;
+  if(out?.status!=="provider_accepted"||out.key?.fromMe!==true||!/^[\w-]{6,160}$/.test(out.key.id||"")||typeof jid!=="string")return false;
+  if(jid===submitted+"@s.whatsapp.net")return true;
+  const receipt=out.recipient_binding;
+  if(receipt?.basis!=="native_lookup"||receipt.submitted!==submitted||receipt.canonical_jid!==jid)return false;
+  const canonical=/^(55[1-9]\d(?:9)?[6-9]\d{7})@s\.whatsapp\.net$/.exec(jid)?.[1];
+  if(!canonical||!/^55[1-9]\d(?:9)?[6-9]\d{7}$/.test(submitted))return false;
+  const [short,long]=submitted.length<canonical.length?[submitted,canonical]:[canonical,submitted];
+  return short.length===12&&long.length===13&&long===short.slice(0,4)+"9"+short.slice(4);
+}
 function post(socketPath,input,signal){
   const data=JSON.stringify(input);
   return new Promise((resolve,reject)=>{
     const q=http.request({socketPath,method:"POST",path:"/deliver",signal,headers:{"Content-Type":"application/json","Content-Length":Buffer.byteLength(data)}},r=>{
       const chunks=[];let size=0;r.on("data",b=>{if((size+=b.length)>16384)r.destroy(Error("response_limit"));else chunks.push(b);});
-      r.on("error",reject);r.on("end",()=>{try{const o=JSON.parse(Buffer.concat(chunks));const accepted=r.statusCode===201&&o.status==="provider_accepted"&&o.key?.fromMe===true&&/^[\w-]{6,160}$/.test(o.key.id||"")&&o.key.remoteJid===digits(input.payload.number)+"@s.whatsapp.net";
+      r.on("error",reject);r.on("end",()=>{try{const o=JSON.parse(Buffer.concat(chunks));const accepted=r.statusCode===201&&acceptedKey(input,o);
         resolve(new Response(JSON.stringify(accepted?o:{status:"delivery_unknown"}),{status:accepted?201:409,headers:{"Content-Type":"application/json"}}));}catch(e){reject(e);}});});
     q.on("error",reject);q.end(data);
   });
