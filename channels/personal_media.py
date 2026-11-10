@@ -11,9 +11,10 @@ import os
 from pathlib import Path
 import re
 import stat
+import uuid
 from datetime import datetime, timezone
 
-from bridge import Event, canonical, digest, need
+from bridge import Event, Held, bounded, canonical, digest, need
 from personal import INSTANCE, Personal
 
 
@@ -294,6 +295,14 @@ class PersonalSequence:
             db.execute("""CREATE TABLE IF NOT EXISTS personal_inbound
                 (event_key TEXT PRIMARY KEY, record_id TEXT NOT NULL UNIQUE,
                  source_sha256 TEXT NOT NULL, received_at TEXT NOT NULL)""")
+            db.execute("""CREATE TABLE IF NOT EXISTS personal_recipient_confirmation
+                (event_key TEXT PRIMARY KEY, position INTEGER NOT NULL CHECK(position=1),
+                 record_id TEXT NOT NULL, request_uuid TEXT NOT NULL,
+                 native_id TEXT NOT NULL, request_sha256 TEXT NOT NULL,
+                 question_sha256 TEXT NOT NULL, response_sha256 TEXT NOT NULL,
+                 confirmation_sha256 TEXT NOT NULL, confirmed_at TEXT NOT NULL,
+                 source TEXT NOT NULL CHECK(source='recipient_direct_chat'),
+                 status TEXT NOT NULL CHECK(status='recipient_confirmed'))""")
             db.execute("INSERT OR IGNORE INTO personal_test_window VALUES(1,?,?)",
                        (self.opened_at, recipient_hash))
             saved = db.execute("SELECT opened_at,recipient_hash FROM personal_test_window WHERE id=1").fetchone()
@@ -368,3 +377,116 @@ class PersonalSequence:
              "accepted_intent_mismatch")
         return self.transport.confirm_part(self.box, event_key, position, witness,
                                            accepted_intent_sha256=saved["request_sha256"])
+
+    def record_recipient_confirmation(self, event_key, confirmation):
+        """Record the recipient's direct proof separately from provider status."""
+        need(isinstance(event_key, str) and HEX.fullmatch(event_key) and
+             isinstance(confirmation, dict) and set(confirmation) == {
+                 "status", "source", "position", "request", "native_id", "request_sha256",
+                 "question_sha256", "response_sha256", "confirmation_sha256", "confirmed_at"} and
+             confirmation["status"] == "recipient_confirmed" and
+             confirmation["source"] == "recipient_direct_chat" and confirmation["position"] == 1 and
+             all(isinstance(confirmation[k], str) and HEX.fullmatch(confirmation[k]) for k in
+                 ("request_sha256", "question_sha256", "response_sha256", "confirmation_sha256")) and
+             _instant(confirmation["confirmed_at"]) > _instant(self.opened_at),
+             "invalid_recipient_confirmation")
+        with self.box.db() as db:
+            db.execute("BEGIN IMMEDIATE")
+            link = db.execute("SELECT record_id FROM personal_inbound WHERE event_key=?", (event_key,)).fetchone()
+            event = db.execute("SELECT event FROM channel_events WHERE event_key=?", (event_key,)).fetchone()
+            parts = db.execute("SELECT position,payload,state,native_id,receipt FROM channel_parts WHERE event_key=? ORDER BY position",
+                               (event_key,)).fetchall()
+            need(link and event and len(parts) == 2 and parts[0]["state"] == "accepted" and
+                 parts[1]["state"] == "pending" and parts[1]["native_id"] is None and
+                 parts[1]["receipt"] is None, "recipient_confirmation_wrong_state")
+            inbound = json.loads(event["event"])
+            accepted = json.loads(parts[0]["receipt"])
+            native = json.loads(parts[0]["native_id"])[2]
+            question = inbound["text"]
+            response = json.loads(parts[0]["payload"])["text"]
+            inbound_hash = hashlib.sha256(inbound["native_id"].encode()).hexdigest()
+            request = str(uuid.uuid5(uuid.NAMESPACE_URL, "jp-personal-inbound:" + inbound_hash))
+            need(inbound["sender"] == self.transport.jid and
+                 confirmation["request"] == request and
+                 confirmation["native_id"] == native and
+                 confirmation["request_sha256"] == accepted.get("request_sha256") and
+                 confirmation["question_sha256"] == hashlib.sha256(question.encode()).hexdigest() and
+                 confirmation["response_sha256"] == hashlib.sha256(response.encode()).hexdigest(),
+                 "recipient_confirmation_identity_mismatch")
+            need(not db.execute("SELECT 1 FROM personal_recipient_confirmation WHERE event_key=?",
+                                (event_key,)).fetchone(), "recipient_confirmation_already_recorded")
+            db.execute("INSERT INTO personal_recipient_confirmation VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
+                       (event_key, 1, link["record_id"], request, native, accepted["request_sha256"],
+                        confirmation["question_sha256"], confirmation["response_sha256"],
+                        confirmation["confirmation_sha256"], confirmation["confirmed_at"],
+                        confirmation["source"], confirmation["status"]))
+        return {"status": "recipient_confirmed", "provider_state": "accepted_not_delivered",
+                "event_key": event_key, "position": 1}
+
+    def advance_after_recipient_confirmation(self, event_key):
+        """Send only the JPEG after a bound human confirmation of part one."""
+        need(isinstance(event_key, str) and HEX.fullmatch(event_key), "invalid_personal_event_key")
+        with self.box.db() as db:
+            event = db.execute("SELECT event FROM channel_events WHERE event_key=?", (event_key,)).fetchone()
+            parts = db.execute("SELECT position,payload,state,native_id,receipt FROM channel_parts WHERE event_key=? ORDER BY position",
+                               (event_key,)).fetchall()
+            human = db.execute("SELECT * FROM personal_recipient_confirmation WHERE event_key=?",
+                               (event_key,)).fetchone()
+            link = db.execute("SELECT record_id FROM personal_inbound WHERE event_key=?", (event_key,)).fetchone()
+        need(event and link and human and len(parts) == 2 and parts[0]["state"] == "accepted" and
+             parts[1]["state"] == "pending" and human["status"] == "recipient_confirmed" and
+             human["source"] == "recipient_direct_chat" and human["record_id"] == link["record_id"],
+             "human_confirmed_image_not_pending")
+        inbound = json.loads(event["event"])
+        image = json.loads(parts[1]["payload"])
+        need(inbound["sender"] == self.transport.jid and image.get("kind") == "image" and
+             isinstance(image.get("asset"), dict) and image["asset"].get("group") == "servicos" and
+             human["native_id"] == json.loads(parts[0]["native_id"])[2] and
+             human["request_sha256"] == json.loads(parts[0]["receipt"]).get("request_sha256") and
+             human["question_sha256"] == hashlib.sha256(inbound["text"].encode()).hexdigest() and
+             human["response_sha256"] == hashlib.sha256(
+                 json.loads(parts[0]["payload"])["text"].encode()).hexdigest(),
+             "human_confirmation_binding_changed")
+        _, _, intent_sha256 = self.transport.request_intent(inbound, image)
+        claims = Path(self.claims_dir).absolute()
+        need(not any(p.is_symlink() for p in (claims, *claims.parents)), "unsafe_claim_directory")
+        info = claims.stat()
+        need(stat.S_ISDIR(info.st_mode) and info.st_uid == os.geteuid() and
+             stat.S_IMODE(info.st_mode) == 0o700, "private_claim_directory_required")
+        claim = claims / f"{event_key}-2.claim"
+        fd = os.open(claim, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+        try:
+            raw = canonical({"event_sha256": event_key, "position": 2,
+                             "request_sha256": intent_sha256}).encode()
+            while raw:
+                written = os.write(fd, raw)
+                need(written > 0, "claim_write_failed")
+                raw = raw[written:]
+            os.fsync(fd)
+        finally:
+            os.close(fd)
+        dir_fd = os.open(claims, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+        try:
+            os.fsync(dir_fd)
+        finally:
+            os.close(dir_fd)
+        with self.box.db() as db:
+            db.execute("BEGIN IMMEDIATE")
+            need(db.execute("UPDATE channel_parts SET state='sending' WHERE event_key=? AND position=2 AND state='pending'",
+                            (event_key,)).rowcount == 1, "human_confirmed_image_race")
+        self.transport._claimed_request_sha256 = intent_sha256
+        try:
+            accepted = self.transport.send(inbound, image)
+            need(accepted.get("request_sha256") == intent_sha256 and
+                 accepted.get("destination") == self.transport.jid and
+                 accepted.get("account") == INSTANCE, "image_acceptance_unbound")
+            native = bounded(accepted.get("id"), 200)
+            with self.box.db() as db:
+                need(db.execute("UPDATE channel_parts SET state='accepted',native_id=?,receipt=? WHERE event_key=? AND position=2 AND state='sending'",
+                                (canonical(["whatsapp", INSTANCE, native]), canonical(accepted), event_key)).rowcount == 1,
+                     "image_acceptance_persist_failed")
+            return {"status": "accepted_not_delivered", "position": 2}
+        except Exception:
+            raise Held("send_outcome_unknown") from None
+        finally:
+            self.transport._claimed_request_sha256 = None

@@ -48,6 +48,17 @@ conservou os bytes do JPEG sem processamento nem que a imagem foi vista. O
 executor deve validar o envelope AEAD do ACK e o mapeamento PN↔LID antes de
 fornecer o testemunho. Falha ou resultado incerto não autoriza reenvio.
 
+Na homologação **pessoal e única**, uma confirmação direta do destinatário
+vinculada ao UUIDv5 da entrada, ID nativo aceito, SHA da requisição, pergunta,
+resposta e instante observado pode ser registrada como `recipient_confirmed`.
+`record_recipient_confirmation` guarda essa prova em tabela separada; a parte 1
+continua `accepted` no Outbox e qualquer ACK de LID divergente continua sem
+atribuição. `advance_after_recipient_confirmation` exige o registro, a mesma
+arte de serviços pendente, claim exclusivo sincronizado e faz uma única
+tentativa de JPEG. Não altera o caminho de confirmação de outros contatos nem
+finge que houve `DELIVERY_ACK` para o destinatário. Se a tentativa ficar
+incerta, a parte 2 permanece `sending` e não é repetida.
+
 ## Cliente nativo e sequência vinculada ao inbound
 
 `PersonalMediaNative` herda a configuração e o opener sem proxy de `Native`,
