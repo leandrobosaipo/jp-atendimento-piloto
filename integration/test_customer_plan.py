@@ -27,14 +27,24 @@ class TestHeldPlan(unittest.TestCase):
             "account": 12, "inbox": 22, "channel": "fixturechannel", "fixture_account": 1,
             "review_inbox": 3}, self.chat, lambda: directory, lookup)
         self.reserve = PlannerReservation(root / "reservations.sqlite3", root / "intake.sqlite3", self.chat)
-        image = b"\xff\xd8approved-fixture\xff\xd9"
-        artwork = {"id": "servicos-03", "filename": "servicos-03.jpg", "group": "servicos",
-                   "approved": True, "bytes": len(image), "sha256": hashlib.sha256(image).hexdigest()}
-        manifest = json.dumps({"assets": [artwork], "price_source_policy": "pending_user_resolution"}).encode()
+        images = {}
+        artworks = []
+        for group in ("servicos", "clube-jp"):
+            for number in range(1, 4):
+                ident = f"{group}-{number:02d}"
+                image = b"\xff\xd8" + ident.encode() + b"\xff\xd9"
+                filename = ident + ".jpg"
+                images[filename] = image
+                artworks.append({"id": ident, "filename": filename, "group": group,
+                                 "approved": True, "bytes": len(image),
+                                 "sha256": hashlib.sha256(image).hexdigest()})
+        manifest = json.dumps({"assets": artworks, "price_source_policy": "pending_user_resolution",
+                               "club_plans": [{"name": "Plano fictício", "visits_per_month": 1,
+                                               "price_cents": 10000}]}).encode()
         self.plan = HeldPlanner(root / "plans.sqlite3", root / "reservations.sqlite3", self.chat,
             manifest_bytes=manifest, manifest_sha256=hashlib.sha256(manifest).hexdigest(),
-            asset_bytes=lambda filename: image)
-        self.artwork = artwork
+            asset_bytes=lambda filename: images[filename])
+        self.artworks = {a["id"]: a for a in artworks}
 
     def inbound(self, sender, native, text="Mostre a tabela de serviços"):
         raw = json.dumps({"instance": INSTANCE, "event": "messages.upsert", "data": {
@@ -63,11 +73,44 @@ class TestHeldPlan(unittest.TestCase):
                              (receipt["account"], receipt["inbox"], receipt["contact"],
                               receipt["conversation"], receipt["message"]))
             self.assertEqual([x["state"] for x in plan["parts"]], ["held_before_transport"] * 2)
-            self.assertEqual(plan["parts"][1]["asset_sha256"], self.artwork["sha256"])
+            chosen = self.artworks[plan["parts"][1]["asset_id"]]
+            self.assertEqual(plan["parts"][1]["asset_sha256"], chosen["sha256"])
+            self.assertEqual(chosen["group"], "servicos")
             self.assertEqual(self.plan.prepare(self.query(receipt)), plan)
         with self.plan.db() as db:
             self.assertEqual(db.execute("SELECT count(*) FROM held_parts").fetchone()[0], 4)
         self.assertEqual(self.chat.outgoing_calls, 0)
+
+    def test_variants_are_distributed_by_reservation_and_replay_is_stable(self):
+        selected = set()
+        for number in range(12):
+            reservation = self.inbound(KNOWN, f"VARIANT{number:03d}")
+            result = self.plan.prepare(self.query(reservation))
+            selected.add(result["parts"][1]["asset_id"])
+            self.assertEqual(self.plan.prepare(self.query(reservation)), result)
+        self.assertEqual(selected, {"servicos-01", "servicos-02", "servicos-03"})
+        self.assertEqual(self.chat.outgoing_calls, 0)
+
+    def test_club_package_uses_approved_variant_and_stays_held(self):
+        reservation = self.inbound(NEW, "PACKAGE001", "Quero conhecer o Clube JP")
+        result = self.plan.prepare(self.query(reservation))
+        self.assertEqual((result["status"], result["transport_attempts"]), ("prepared_held", 0))
+        chosen = self.artworks[result["parts"][1]["asset_id"]]
+        self.assertEqual(chosen["group"], "clube-jp")
+        self.assertEqual(result["parts"][1]["asset_sha256"], chosen["sha256"])
+        self.assertEqual(self.plan.prepare(self.query(reservation)), result)
+
+    def test_prior_persisted_variant_is_preserved_after_policy_upgrade(self):
+        reservation = self.inbound(KNOWN, "PRIORART001")
+        first = self.plan.prepare(self.query(reservation))
+        old = self.artworks["servicos-03"]
+        with self.plan.db() as db:
+            db.execute("UPDATE held_parts SET asset_id=?,asset_sha256=? WHERE reservation=? AND position=2",
+                       (old["id"], old["sha256"], reservation["reservation"]))
+        again = self.plan.prepare(self.query(reservation))
+        self.assertEqual((again["parts"][1]["asset_id"], again["parts"][1]["asset_sha256"]),
+                         (old["id"], old["sha256"]))
+        self.assertEqual(again["parts"][0]["part_id"], first["parts"][0]["part_id"])
 
     def test_human_claim_between_parts_blocks_both(self):
         reservation = self.inbound(KNOWN, "FIXTUREKNOWN002")

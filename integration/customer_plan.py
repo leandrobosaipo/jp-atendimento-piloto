@@ -30,13 +30,18 @@ class HeldPlanner:
         need(digest(manifest_bytes) == manifest_sha256, "manifest_changed")
         catalog = json.loads(manifest_bytes)
         need(isinstance(catalog.get("assets"), list), "manifest_invalid")
-        selected = [a for a in catalog["assets"] if a.get("id") == selected_asset]
-        need(len(selected) == 1 and selected[0].get("group") == "servicos" and
-             selected[0].get("approved") is True and
-             isinstance(selected[0].get("filename"), str) and
-             pathlib.Path(selected[0]["filename"]).name == selected[0]["filename"],
-             "approved_service_art_required")
-        self.catalog, self.asset, self.asset_bytes = catalog, selected[0], asset_bytes
+        pools = {}
+        for group in ("servicos", "clube-jp"):
+            variants = sorted((a for a in catalog["assets"] if a.get("group") == group),
+                              key=lambda a: a.get("id", ""))
+            need(len(variants) == 3 and len({a.get("id") for a in variants}) == 3 and
+                 all(a.get("approved") is True and isinstance(a.get("filename"), str) and
+                     pathlib.Path(a["filename"]).name == a["filename"] and
+                     type(a.get("bytes")) is int and a["bytes"] > 4 and
+                     isinstance(a.get("sha256"), str) and len(a["sha256"]) == 64
+                     for a in variants), "three_approved_variants_required")
+            pools[group] = variants
+        self.catalog, self.pools, self.asset_bytes = catalog, pools, asset_bytes
         with self.db() as db:
             db.execute("""CREATE TABLE IF NOT EXISTS held_parts (
                 reservation TEXT NOT NULL, position INTEGER NOT NULL,
@@ -112,16 +117,33 @@ class HeldPlanner:
         options = {"intent": "auto", "service": "", "professional": "", "date": ""}
         context, text, decision, group = pilot_prepare(
             messages[0]["content"], options, {}, self.catalog, forbidden_query)
-        if not (context.get("category") == "services_art" and decision == "answer" and
-                group == "servicos" and text == "Aqui está a tabela de serviços."):
+        public_table = (context.get("category") == "services_art" and group == "servicos" and
+                        text == "Aqui está a tabela de serviços.")
+        public_club = (context.get("category") == "club" and group == "clube-jp" and
+                       isinstance(text, str) and 0 < len(text) <= 600)
+        if not (decision == "answer" and (public_table or public_club)):
             return {"status": "held", "request": row["request"], "reservation": row["reservation"],
                     "reason": "public_plan_not_applicable"}
         need(not query_calls, "personal_lookup_forbidden")
-        raw = self.asset_bytes(self.asset["filename"])
+        pool = self.pools[group]
+        with self.db() as db:
+            prior = db.execute("SELECT asset_id,asset_sha256 FROM held_parts WHERE reservation=? ORDER BY position",
+                               (row["reservation"],)).fetchall()
+        need(len(prior) in (0, 2), "partial_prior_plan")
+        if prior:
+            selected = [a for a in pool if a["id"] == prior[1]["asset_id"] and
+                        a["sha256"] == prior[1]["asset_sha256"]]
+            need(prior[0]["asset_id"] is None and len(selected) == 1,
+                 "prior_variant_changed")
+            asset = selected[0]
+        else:
+            asset = pool[int(digest(row["reservation"].encode()), 16) % len(pool)]
+        raw = self.asset_bytes(asset["filename"])
         need(isinstance(raw, bytes) and raw.startswith(b"\xff\xd8") and raw.endswith(b"\xff\xd9") and
-             len(raw) == self.asset["bytes"] and digest(raw) == self.asset["sha256"],
+             len(raw) == asset["bytes"] and digest(raw) == asset["sha256"],
              "approved_artwork_bytes_changed")
-        pieces = [(text, None, None), ("Tabela de serviços", self.asset["id"], self.asset["sha256"])]
+        pieces = [(text, None, None),
+                  ("Tabela de serviços" if public_table else "Clube JP", asset["id"], asset["sha256"])]
         prepared = []
         for position, (content, asset_id, asset_sha) in enumerate(pieces, 1):
             self._human_free(row)  # A human may claim the conversation between parts.
