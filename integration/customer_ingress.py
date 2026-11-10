@@ -15,6 +15,7 @@ import uuid
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1] / "channels"))
 from customer_identity import resolve
+from customer_planner import PlannerReservation, ReservationError
 
 
 class Held(Exception):
@@ -125,7 +126,8 @@ class Intake:
         with self.db() as db:
             row = db.execute("SELECT * FROM intakes WHERE request=?", (request_id,)).fetchone()
         need(row, "missing_intake")
-        return {k: row[k] for k in ("request", "record", "state", "reason", "contact", "conversation", "message")}
+        return {"account": self.chat.account, "inbox": self.chat.inbox,
+                **{k: row[k] for k in ("request", "record", "state", "reason", "contact", "conversation", "message")}}
 
     def _contact(self, address_hash, identity):
         with self.db() as db:
@@ -218,11 +220,15 @@ class Intake:
             meta = owner.get("meta") or {}
             labels = owner.get("labels") or []
             human = bool(meta.get("assignee") or meta.get("team") or "jp-atendimento-humano" in labels)
-            reason = ("human_ownership" if human else
-                      "identity_unconfirmed" if decision["status"] != "identified" else
-                      "customer_inactive" if decision["inactive"] else
-                      "opt_out" if decision["opt_out"] else None)
-            state = "held" if reason else "ready"
+            if human:
+                reason = "human_ownership"
+            elif decision["status"] == "identified":
+                reason = "customer_inactive" if decision["inactive"] else "opt_out" if decision["opt_out"] else None
+            elif decision["status"] == "no_customer_match":
+                reason = None
+            else:
+                reason = decision["status"]
+            state = "held" if reason else "public_only" if decision["status"] == "no_customer_match" else "ready"
             with self.db() as db:
                 db.execute("UPDATE intakes SET state=?,reason=?,message=? WHERE request=? AND state='posting'",
                            (state, reason, mid, request_id))
@@ -244,19 +250,21 @@ def serve(config_path):
     chat = Chatwoot(cfg["account"], cfg["inbox"], cfg["channel"],
                     pathlib.Path(cfg["chatwoot_token_file"]).read_text().strip())
     app = Intake(cfg["db_file"], cfg, chat, directory, lookup)
+    planner = PlannerReservation(cfg["reservations_db_file"], cfg["db_file"], chat)
     class Handler(http.server.BaseHTTPRequestHandler):
         def log_message(self, *_):
             pass
         def do_POST(self):
             try:
-                need(self.path == "/inbound", "wrong_path")
+                need(self.path in ("/inbound", "/reserve"), "wrong_path")
                 supplied = self.headers.get("Authorization", "")
                 need(hmac.compare_digest(supplied.encode(), b"Bearer " + token), "unauthorized")
                 size = int(self.headers.get("Content-Length", "0"))
                 need(0 < size <= 1_400_000, "size_limit")
-                result = app.receive(json.loads(self.rfile.read(size)))
+                body = json.loads(self.rfile.read(size))
+                result = app.receive(body) if self.path == "/inbound" else planner.reserve(body)
                 payload, status = json.dumps(result).encode(), 200
-            except Held as exc:
+            except (Held, ReservationError) as exc:
                 payload, status = json.dumps({"status": "held", "reason": str(exc)}).encode(), 409
             except Exception:
                 payload, status = b'{"status":"held","reason":"outcome_unknown"}', 503

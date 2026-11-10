@@ -8,6 +8,7 @@ import unittest
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 from customer_ingress import Chatwoot, Intake, Held, digest, receipt_id
+from customer_planner import PlannerReservation, ReservationError
 
 
 INSTANCE = "jp-fixture"
@@ -76,6 +77,8 @@ class IngressTest(unittest.TestCase):
                                         "jid": KNOWN}] if numbers else []
         self.app = Intake(pathlib.Path(self.tmp.name) / "intake.sqlite3", self.config,
                           self.chat, lambda: self.directory, lambda n: self.lookup(n))
+        self.planner = PlannerReservation(pathlib.Path(self.tmp.name) / "reservations.sqlite3",
+                                          pathlib.Path(self.tmp.name) / "intake.sqlite3", self.chat)
 
     def event(self, sender, native="FIXTURE001", text="Mensagem fictícia"):
         raw = json.dumps({"instance": INSTANCE, "event": "messages.upsert", "data": {
@@ -87,12 +90,22 @@ class IngressTest(unittest.TestCase):
     def test_new_and_identified_have_separate_materialized_conversations(self):
         new = self.app.receive(self.event(NEW, "FIXTURE001"))
         known = self.app.receive(self.event(KNOWN, "FIXTURE002"))
-        self.assertEqual((new["state"], new["reason"]), ("held", "identity_unconfirmed"))
+        self.assertEqual((new["state"], new["reason"]), ("public_only", None))
         self.assertEqual((known["state"], known["reason"]), ("ready", None))
         self.assertNotEqual(new["contact"], known["contact"])
         self.assertNotEqual(new["conversation"], known["conversation"])
         self.assertEqual(self.chat.incoming_calls, 2)
         self.assertEqual(self.chat.outgoing_calls, 0)
+        receipt_new = self.planner.reserve({k: new[k] for k in
+            ("request", "record", "account", "inbox", "contact", "conversation", "message", "state")})
+        receipt_known = self.planner.reserve({k: known[k] for k in
+            ("request", "record", "account", "inbox", "contact", "conversation", "message", "state")})
+        self.assertEqual(receipt_new["mode"], "public_information")
+        self.assertEqual(receipt_new["capabilities"], ["public_price", "human_handoff"])
+        self.assertEqual(receipt_known["mode"], "identified_customer")
+        self.assertEqual(receipt_known["status"], "reserved")
+        with self.planner.db() as db:
+            self.assertEqual(db.execute("SELECT count(*) FROM reservations").fetchone()[0], 2)
         with self.app.db() as db:
             identity = json.loads(db.execute("SELECT identity FROM contacts WHERE address_hash=?",
                          (digest(KNOWN.encode()),)).fetchone()[0])
@@ -102,6 +115,8 @@ class IngressTest(unittest.TestCase):
         first = self.app.receive(self.event(KNOWN))
         self.assertEqual(self.app.receive(self.event(KNOWN)), first)
         self.assertEqual((self.chat.contact_calls, self.chat.incoming_calls), (1, 1))
+        submitted = {k: first[k] for k in ("request", "record", "account", "inbox", "contact", "conversation", "message", "state")}
+        self.assertEqual(self.planner.reserve(submitted), self.planner.reserve(submitted))
         with self.assertRaises(Held):
             self.app.receive(self.event(KNOWN, text="Texto alterado"))
         self.assertEqual(self.chat.incoming_calls, 1)
@@ -112,6 +127,8 @@ class IngressTest(unittest.TestCase):
         self.assertEqual((row["state"], row["reason"]), ("held", "human_ownership"))
         self.assertIsInstance(row["message"], int)
         self.assertEqual(self.chat.outgoing_calls, 0)
+        self.assertEqual(self.planner.reserve({k: row[k] for k in
+            ("request", "record", "account", "inbox", "contact", "conversation", "message", "state")})["status"], "held")
 
     def test_uncertain_post_is_held_without_retry(self):
         self.chat.fail_incoming = True
@@ -133,6 +150,23 @@ class IngressTest(unittest.TestCase):
         with self.assertRaises(Held):
             self.app.receive(bad)
         self.assertEqual(self.chat.incoming_calls, 0)
+
+    def test_reservation_rejects_wrong_chatwoot_ids(self):
+        row = self.app.receive(self.event(KNOWN))
+        submitted = {k: row[k] for k in ("request", "record", "account", "inbox", "contact", "conversation", "message", "state")}
+        with self.assertRaises(ReservationError):
+            self.planner.reserve({**submitted, "conversation": row["conversation"] + 1})
+        with self.planner.db() as db:
+            self.assertEqual(db.execute("SELECT count(*) FROM reservations").fetchone()[0], 0)
+
+    def test_ambiguous_identity_is_held_without_reservation(self):
+        self.directory = {"data": [self.directory["data"][0],
+            {"Codigo": "7102", "Cli_Celular": "+55 11 99000-0001"}],
+            "recordsFiltered": 2, "recordsTotal": 2}
+        row = self.app.receive(self.event(KNOWN))
+        self.assertEqual((row["state"], row["reason"]), ("held", "ambiguous_customer_match"))
+        self.assertEqual(self.planner.reserve({k: row[k] for k in
+            ("request", "record", "account", "inbox", "contact", "conversation", "message", "state")})["status"], "held")
 
     def test_chatwoot_v419_contact_shape_and_identifier(self):
         api = Chatwoot(12, 22, "fixturechannel", "test-token")
