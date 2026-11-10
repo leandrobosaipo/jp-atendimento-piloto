@@ -73,8 +73,7 @@ def match_event(record, attempt, kind, instance_hash, mapping):
     return row
 
 
-def evidence(attempt, content, echo, ack, instance_hash, mapping=None):
-    row = match_event(echo, attempt, "messages.upsert", instance_hash, mapping)
+def verify_echo(row, content):
     message = row["message"]
     kinds = [k for k in ("conversation","extendedTextMessage","imageMessage","videoMessage") if k in message]
     need(len(kinds) == 1, "ambiguous_native_content")
@@ -87,8 +86,16 @@ def evidence(attempt, content, echo, ack, instance_hash, mapping=None):
         need(len(native_hash) == 32, "invalid_media_digest")
         actual = digest([media["mimetype"], media.get("caption",""), native_hash.hex()])
     need(actual == content, "native_content_changed")
-    update = match_event(ack, attempt, "messages.update", instance_hash, mapping)
+
+
+def delivery_state(update):
     status = update.get("status") or update.get("update",{}).get("status")
     need(status in ("READ","DELIVERY_ACK"), "delivery_unconfirmed")
+    return "read" if status == "READ" else "delivered"
+
+
+def evidence(attempt, content, echo, ack, instance_hash, mapping=None):
+    verify_echo(match_event(echo, attempt, "messages.upsert", instance_hash, mapping), content)
+    state = delivery_state(match_event(ack, attempt, "messages.update", instance_hash, mapping))
     return dict(instance=INSTANCE, native=attempt["native"], fromMe=True, destination=attempt["destination"],
-                payload_sha256=attempt["body_hash"], state="read" if status=="READ" else "delivered")
+                payload_sha256=attempt["body_hash"], state=state)

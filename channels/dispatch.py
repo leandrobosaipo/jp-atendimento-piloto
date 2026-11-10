@@ -29,6 +29,9 @@ class Dispatcher:
                 CREATE INDEX IF NOT EXISTS dispatch_usage ON dispatch_attempts(attempted);
                 CREATE INDEX IF NOT EXISTS dispatch_pending ON dispatch_attempts(destination,state);
                 CREATE TABLE IF NOT EXISTS dispatch_content (attempt TEXT PRIMARY KEY, content_hash TEXT NOT NULL);
+                CREATE TABLE IF NOT EXISTS dispatch_observations (
+                    attempt TEXT NOT NULL, kind TEXT NOT NULL CHECK(kind IN ('echo','delivered','read')),
+                    record TEXT NOT NULL, PRIMARY KEY(attempt,kind));
                 CREATE TABLE IF NOT EXISTS dispatch_receipts (record TEXT NOT NULL, echo TEXT NOT NULL,
                     attempt TEXT NOT NULL, state TEXT NOT NULL, PRIMARY KEY(record,attempt));
                 CREATE TABLE IF NOT EXISTS dispatch_baseline (

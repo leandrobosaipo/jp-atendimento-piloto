@@ -14,7 +14,7 @@ from bridge import Held, Outbox, digest
 from dispatch import Dispatcher
 from dispatch_contract import INSTANCE
 from dispatch_service import Handler, Policy, Server, clear_stale_socket
-from dispatch_service import observe_records
+from dispatch_service import observe_event, observe_records
 
 
 class DeliveryTests(unittest.TestCase):
@@ -165,6 +165,21 @@ class DeliveryTests(unittest.TestCase):
                 check(**args)
         with self.assertRaises(Held):
             self.sender.deliver(self.body(True),self.roles)
+        def ingest(kind, data):
+            return observe_event(self.sender, {"record":seal(kind,data)}, config=self.path,
+                                 intake=self.path, admin_uid=uid, receiver_uid=uid)
+        self.assertEqual(ingest("messages.update",{**ack,"status":"SERVER_ACK"})["confirmed"],0)
+        with self.assertRaises(Held):
+            ingest("messages.update",{**ack,"remoteJid":"10000000001@s.whatsapp.net"})
+        self.assertEqual(ingest("messages.update",ack),{"matched":1,"waiting":1,"confirmed":0})
+        self.sender=self.service()
+        with self.assertRaises(Held):
+            ingest("messages.upsert",dict(key=key,message={"conversation":"Changed"}))
+        with self.assertRaises(Held):
+            self.sender.deliver(self.body(True),self.roles)
+        valid_echo=dict(key=key,message={"conversation":"Fixture"})
+        self.assertEqual(ingest("messages.upsert",valid_echo)["confirmed"],1)
+        self.assertEqual(ingest("messages.update",ack)["confirmed"],1)
         self.assertEqual(check(),{"status":"delivered"})
         self.assertEqual(check(),{"status":"delivered"})
         self.assertEqual(self.sender.deliver(self.body(True),self.roles)[0],201)

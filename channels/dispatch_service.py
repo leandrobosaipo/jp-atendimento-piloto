@@ -16,7 +16,7 @@ from uuid import UUID
 from bridge import Held, Outbox, canonical, digest, need
 from dispatch import Dispatcher
 from dispatch_contract import INSTANCE
-from dispatch_receipt import evidence, open_record
+from dispatch_receipt import delivery_state, evidence, match_event, open_record, verify_echo
 from personal import NoRedirect, ORIGIN
 
 CONFIG = Path("/etc/jp-dispatch")
@@ -51,24 +51,84 @@ def read_private(path, uid, **options):
     return json.loads(private_bytes(path,uid,**options))
 
 
+def read_record(intake, identifier, uid):
+    need(isinstance(identifier, str) and re.fullmatch(r"[a-f0-9]{64}",identifier), "invalid_record_id")
+    key = private_bytes(intake/"access/key",uid,limit=32)
+    raw = private_bytes(intake/"data/records"/(identifier+".json"),uid,limit=32*1024*1024)
+    return open_record(identifier,json.loads(raw),key)
+
+
+def receipt_authority(config, attempt, uid):
+    scope = read_private(config/"receipt-scope.json",uid)
+    need(scope["instance"]==INSTANCE and re.fullmatch(r"[a-f0-9]{64}",scope["instance_hash"]), "receipt_scope")
+    pair = config/"receipt-mappings"/(hashlib.sha256(attempt.encode()).hexdigest()+".json")
+    try:
+        mapping = read_private(pair,uid)
+    except FileNotFoundError:
+        mapping = None
+    return scope["instance_hash"], mapping
+
+
 def observe_records(dispatcher, body, *, config=CONFIG, intake=Path("/var/lib/jp-migracao-revisao/entrada-operacional"),
                     admin_uid=0, receiver_uid=65534):
     need(isinstance(body,dict) and set(body)=={"native","echo","record"} and isinstance(body["native"],str) and
          re.fullmatch(r"[A-Za-z0-9_-]{6,160}",body["native"]) and all(isinstance(body[k],str) and
          re.fullmatch(r"[a-f0-9]{64}",body[k]) for k in ("echo","record")) and body["record"]!=body["echo"], "invalid_receipt_ids")
     def verify(attempt):
-        scope=read_private(config/"receipt-scope.json",admin_uid)
-        need(scope["instance"]==INSTANCE and re.fullmatch(r"[a-f0-9]{64}",scope["instance_hash"]),"receipt_scope")
-        key=private_bytes(intake/"access/key",receiver_uid,limit=32)
-        def record(identifier):
-            raw=private_bytes(intake/"data/records"/(identifier+".json"),receiver_uid,limit=32*1024*1024)
-            return open_record(identifier,json.loads(raw),key)
-        pair=config/"receipt-mappings"/(hashlib.sha256(attempt["attempt"].encode()).hexdigest()+".json")
-        try:mapping=read_private(pair,admin_uid)
-        except FileNotFoundError:mapping=None
-        return {**evidence(attempt,attempt["content_hash"],record(body["echo"]),record(body["record"]),scope["instance_hash"],mapping),
+        authority=receipt_authority(config,attempt["attempt"],admin_uid)
+        return {**evidence(attempt,attempt["content_hash"],read_record(intake,body["echo"],receiver_uid),
+                           read_record(intake,body["record"],receiver_uid),*authority),
                 "echo":body["echo"],"record":body["record"]}
     return {"status":dispatcher.observe(body["native"],verify)}
+
+
+def observe_event(dispatcher, body, *, config=CONFIG, intake=Path("/var/lib/jp-migracao-revisao/entrada-operacional"),
+                  admin_uid=0, receiver_uid=65534):
+    need(isinstance(body,dict) and set(body)=={"record"}, "invalid_event_request")
+    identifier = body["record"]
+    record = read_record(intake,identifier,receiver_uid)
+    envelope = record[1]
+    if isinstance(envelope,list):
+        need(len(envelope)==1, "ambiguous_envelope")
+        envelope = envelope[0]
+    kind = envelope["event"].lower().replace("_",".")
+    need(kind in ("messages.upsert","messages.update") and envelope["instance"]==INSTANCE, "unexpected_native_event")
+    rows = envelope["data"]
+    rows = rows if isinstance(rows,list) else [rows]
+    need(0<len(rows)<=256 and all(isinstance(r,dict) for r in rows), "invalid_event_batch")
+    result = {"matched":0,"waiting":0,"confirmed":0}
+    for item in rows:
+        native = item.get("keyId") or item.get("key",{}).get("id")
+        if not isinstance(native,str) or not re.fullmatch(r"[A-Za-z0-9_-]{6,160}",native):
+            continue
+        with dispatcher.box.db() as db:
+            db.execute("BEGIN IMMEDIATE")
+            attempt = db.execute("""SELECT a.*, c.content_hash FROM dispatch_attempts a
+                JOIN dispatch_content c USING(attempt) WHERE native=? AND state IN ('accepted','delivered','read')""",(native,)).fetchone()
+            if not attempt:
+                continue
+            authority = receipt_authority(config,attempt["attempt"],admin_uid)
+            row = match_event(record,attempt,kind,*authority)
+            if kind == "messages.upsert":
+                verify_echo(row,attempt["content_hash"])
+                observation = "echo"
+            else:
+                if (row.get("status") or row.get("update",{}).get("status")) in ("PENDING","SERVER_ACK"):
+                    result["matched"] += 1
+                    result["waiting"] += 1
+                    continue
+                observation = delivery_state(row)
+            result["matched"] += 1
+            db.execute("INSERT OR IGNORE INTO dispatch_observations VALUES(?,?,?)",(attempt["attempt"],observation,identifier))
+            seen = dict(db.execute("SELECT kind,record FROM dispatch_observations WHERE attempt=?",(attempt["attempt"],)))
+        ack = seen.get("read") or seen.get("delivered")
+        if "echo" in seen and ack:
+            observe_records(dispatcher,{"native":native,"echo":seen["echo"],"record":ack},
+                            config=config,intake=intake,admin_uid=admin_uid,receiver_uid=receiver_uid)
+            result["confirmed"] += 1
+        else:
+            result["waiting"] += 1
+    return result
 
 class Policy:
     def __init__(self, config=CONFIG, ops=OPS, admin_uid=0, core_uid=CORE_UID, core_gid=CORE_UID):
@@ -145,7 +205,7 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_POST(self):
         try:
-            need(self.path in ("/deliver","/receipt"), "unknown_path")
+            need(self.path in ("/deliver","/receipt","/receipt-event"), "unknown_path")
             peer = self.connection.getsockopt(socket.SOL_SOCKET, socket.SO_PEERCRED, struct.calcsize("3i"))
             roles = self.server.policy.roles(struct.unpack("3i", peer)[1])
             lengths = self.headers.get_all("Content-Length", [])
@@ -153,11 +213,13 @@ class Handler(BaseHTTPRequestHandler):
                  not self.headers.get_all("Transfer-Encoding") and self.headers.get_content_type() == "application/json",
                  "invalid_request")
             length = int(lengths[0])
-            need(length <= (1024 if self.path=="/receipt" else MAX_REQUEST), "request_too_large")
+            need(length <= (MAX_REQUEST if self.path=="/deliver" else 1024), "request_too_large")
             self.connection.settimeout(10)
             raw = self.rfile.read(length)
             need(len(raw) == length, "truncated_request")
-            if self.path=="/receipt":
+            if self.path=="/receipt-event":
+                status,result=200,observe_event(self.server.dispatcher,json.loads(raw))
+            elif self.path=="/receipt":
                 status,result=200,observe_records(self.server.dispatcher,json.loads(raw))
             else:
                 status, result = self.server.dispatcher.deliver(json.loads(raw), roles)
