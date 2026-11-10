@@ -9,6 +9,7 @@ import unittest
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 from customer_ingress import Chatwoot, Intake, Held, digest, receipt_id, process_channel
 from customer_ingress import native_sender
+from claimed_customer import ClaimClosed, ClaimedDirectory
 from customer_planner import PlannerReservation, ReservationError
 
 
@@ -231,6 +232,59 @@ class IngressTest(unittest.TestCase):
             self.planner.reserve({**submitted, "conversation": row["conversation"] + 1})
         with self.planner.db() as db:
             self.assertEqual(db.execute("SELECT count(*) FROM reservations").fetchone()[0], 0)
+
+    def test_live_claim_scopes_official_reads_and_blocks_conflicting_phones(self):
+        import sqlite3
+        epoch = "12345678-1234-1234-1234-123456789abc"
+        wf = "sourcewf"
+        self.config.update(channel_epoch=epoch, channel_workflow=wf, native_instance_id_hash=digest(b"fixture-instance"))
+        path = pathlib.Path(self.tmp.name) / "queue.db"
+        queue = sqlite3.connect(path)
+        self.addCleanup(queue.close)
+        queue.executescript("CREATE TABLE owner(slot,epoch,fixture);CREATE TABLE receipts(id,state,execution,epoch)")
+        queue.execute("INSERT INTO owner VALUES(1,?,NULL)", (epoch,))
+        self.directory["data"][0]["Telefone"] = "+55 11 99000-0002"
+        reads = []
+        def directory():
+            reads.append(1)
+            return self.directory
+        self.app.claimed = ClaimedDirectory(path, wf, epoch, directory, lambda n:self.fail("unexpected lookup"))
+        def event(n, address):
+            body = self.event(address,"CLAIMED00"+str(n))
+            packet = json.loads(base64.b64decode(body["raw_base64"]))
+            packet["data"]["instanceId"] = "fixture-instance"
+            raw = json.dumps(packet).encode()
+            record = receipt_id(INSTANCE,raw)
+            queue.execute("INSERT INTO receipts VALUES(?,'claimed',?,?)", (record,str(n),epoch))
+            queue.commit()
+            return raw, record
+        class Plan:
+            def prepare(self, values):
+                self.mode = values["mode"]
+                return {"status":"prepared_held"}
+        plan = Plan()
+        def submit(data, n):
+            return process_channel(*data,wf,str(n),epoch,self.config,self.app,self.planner,plan)
+        for n,addr in enumerate([KNOWN, NEW, "5511990000099@s.whatsapp.net"], start=1):
+            data = event(n,addr)
+            with self.assertRaises(ClaimClosed):
+                submit(data,n+10)
+            result = submit(data,n)
+            self.assertEqual(result["plan"],"held" if n<3 else "prepared_held")
+            self.assertEqual(submit(data,n),result)
+            self.assertEqual(len(reads),n)
+        self.assertEqual(plan.mode,"public_information")
+        with self.app.db() as db:
+            self.assertEqual(db.execute("SELECT reason FROM intakes WHERE state='held'").fetchall()[0][0],"ambiguous_customer_match")
+        raw,record = event(4,NEW)
+        def close_while_reading():
+            queue.execute("UPDATE owner SET epoch=''");queue.commit()
+            return self.directory
+        self.app.claimed.directory = close_while_reading
+        with self.assertRaises(ClaimClosed):
+            submit((raw,record),4)
+        self.assertEqual(self.chat.incoming_calls,3)
+        self.assertEqual(self.chat.outgoing_calls,0)
 
     def test_ambiguous_identity_is_held_without_reservation(self):
         self.directory = {"data": [self.directory["data"][0],

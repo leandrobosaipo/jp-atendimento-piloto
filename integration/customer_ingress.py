@@ -18,6 +18,7 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1] / "channels")
 from customer_identity import resolve
 from customer_planner import PlannerReservation, ReservationError
 from customer_plan import HeldPlanner, PlanHeld
+from claimed_customer import ClaimClosed, dell_reader
 
 
 class Held(Exception):
@@ -136,9 +137,10 @@ class Chatwoot:
 
 
 class Intake:
-    def __init__(self, db_path, config, chatwoot, directory, lookup, bindings=None):
+    def __init__(self, db_path, config, chatwoot, directory, lookup, bindings=None, claimed=None):
         self.db_path, self.cfg, self.chat = str(db_path), config, chatwoot
         self.directory, self.lookup = directory, lookup
+        self.claimed = claimed
         self.bindings = bindings or (lambda: {"instance": config["instance"], "paused": False,
                                               "forward": {}, "reverse": {}})
         need(config["account"] == chatwoot.account and config["inbox"] == chatwoot.inbox and
@@ -184,6 +186,21 @@ class Intake:
                 **{k: row[k] for k in ("request", "record", "state", "reason", "contact", "conversation", "message",
                                        "workflow", "execution")}}
 
+    def channel_sender(self, data, record):
+        cfg = self.cfg
+        key = data["key"]
+        addresses = (key.get("remoteJid"), key.get("remoteJidAlt"), data.get("remoteJidAlt"))
+        if self.claimed is not None and all(a is None or isinstance(a,str) and PN.fullmatch(a) for a in addresses):
+            instance_id = data.get("instanceId")
+            need(isinstance(instance_id, str) and instance_id and
+                 digest(instance_id.encode()) == cfg["native_instance_id_hash"], "native_instance_identity_changed")
+            proof = {"instance":cfg["instance"], "instance_id_hash":cfg["native_instance_id_hash"],
+                     "epoch":cfg["channel_epoch"], "record_id":record, "paused":False, "forward":{}, "reverse":{}}
+        else:
+            proof = self.bindings()
+        return native_sender(data, cfg["instance"], proof, cfg["native_instance_id_hash"],
+                             cfg["channel_epoch"], record)
+
     def _contact(self, address_hash, identity):
         with self.db() as db:
             row = db.execute("SELECT * FROM contacts WHERE address_hash=?", (address_hash,)).fetchone()
@@ -219,7 +236,7 @@ class Intake:
              (self.chat.account, self.chat.inbox, conv_id, contact_id), "conversation_scope_mismatch")
         return row
 
-    def receive(self, body):
+    def receive(self, body, *, claim_epoch=None):
         """One authenticated n8n call; unknown outcomes remain held, never replayed."""
         need(isinstance(body, dict) and set(body) == {"raw_base64", "record_id", "workflow_id", "execution_id"},
              "invalid_intake")
@@ -239,16 +256,14 @@ class Intake:
         need(isinstance(native, str) and re.fullmatch(r"[A-Za-z0-9_-]{6,160}", native),
              "native_sender_unverified")
         channel = body["workflow_id"] == self.cfg.get("channel_workflow")
-        sender = native_sender(data, self.cfg["instance"], self.bindings(),
-                               self.cfg.get("native_instance_id_hash") if channel else None,
-                               self.cfg.get("channel_epoch") if channel else None,
-                               body["record_id"] if channel else None)
+        need((channel and claim_epoch is not None and claim_epoch == self.cfg["channel_epoch"])
+             or (not channel and claim_epoch is None and self.claimed is None), "channel_claim_required")
+        sender = (self.channel_sender(data, body["record_id"]) if channel else
+                  native_sender(data, self.cfg["instance"], self.bindings()))
         message = data.get("message") or {}
         text = message.get("conversation") or (message.get("extendedTextMessage") or {}).get("text")
         need(isinstance(text, str) and 0 < len(text.strip()) <= 600, "unsupported_content")
         address_hash, native_hash = digest(sender.encode()), digest(native.encode())
-        decision = resolve(self.directory(), [address_hash], self.lookup)[address_hash]
-        identity = json.dumps(decision, sort_keys=True, separators=(",", ":"))
         request_id = str(uuid.uuid5(uuid.NAMESPACE_URL, f"jp-isolated-intake:{self.cfg['instance']}:{native}"))
         fingerprint = (native_hash, body["record_id"], address_hash, digest(raw), digest(text.encode()))
         with self.db() as db:
@@ -263,6 +278,12 @@ class Intake:
                 return self.current(request_id)
             db.execute("UPDATE intakes SET state='working' WHERE request=?", (request_id,))
         try:
+            if self.claimed is None:
+                decision = resolve(self.directory(), [address_hash], self.lookup)[address_hash]
+            else:
+                decision = self.claimed.decision(resolve, address_hash, body["record_id"],
+                    body["workflow_id"], str(body["execution_id"]), claim_epoch)
+            identity = json.dumps(decision, sort_keys=True, separators=(",", ":"))
             contact, source, conv = self._contact(address_hash, identity)
             owner = self._check_conversation(conv, contact)
             with self.db() as db:
@@ -306,20 +327,24 @@ def process_channel(raw, record, workflow, execution, epoch, cfg, app, planner, 
          isinstance(record, str) and re.fullmatch(r"[0-9a-f]{64}", record) and
          isinstance(raw, bytes) and 0 < len(raw) <= 1_000_000 and
          receipt_id(cfg["instance"], raw) == record, "channel_scope_invalid")
-    need(record in cfg.get("channel_fixture_records", []), "channel_fixture_scope")
+    if app.claimed is None or "channel_fixture_records" in cfg:
+        need(record in cfg.get("channel_fixture_records", []), "channel_fixture_scope")
+    if app.claimed is not None:
+        app.claimed.check(record, workflow, execution, epoch)
     try:
         envelope = json.loads(raw)
         need(envelope.get("instance") == cfg["instance"] and
              str(envelope.get("event", "")).lower().replace("_", ".") == "messages.upsert",
              "channel_event_invalid")
-        native_sender(envelope["data"], cfg["instance"], app.bindings(),
-                      cfg.get("native_instance_id_hash"), epoch, record)
+        app.channel_sender(envelope["data"], record)
     except (Held, ValueError, KeyError, TypeError):
         # The encrypted collector record remains the durable review source.
         return {"ok": True, "record_id": record, "workflow": workflow,
                 "execution": execution, "status": "retained", "reason": "native_identity_unverified"}
     intake = app.receive({"raw_base64": base64.b64encode(raw).decode(), "record_id": record,
-                          "workflow_id": workflow, "execution_id": execution})
+                          "workflow_id": workflow, "execution_id": execution}, claim_epoch=epoch)
+    if app.claimed is not None:
+        app.claimed.check(record, workflow, execution, epoch)
     submitted = {k: intake[k] for k in
                  ("request", "record", "account", "inbox", "contact", "conversation", "message", "state")}
     reservation = planner.reserve(submitted)
@@ -338,21 +363,27 @@ def process_channel(raw, record, workflow, execution, epoch, cfg, app, planner, 
 
 def serve(config_path):
     cfg = json.loads(pathlib.Path(config_path).read_text())
+    claimed = None
+    if "claimed_queue_db" in cfg:
+        need(cfg.get("channel_epoch") and cfg.get("channel_workflow"), "channel_claim_required")
+        claimed = dell_reader(cfg["claimed_queue_db"], cfg["channel_workflow"],
+                              cfg["channel_epoch"], cfg["instance"])
     if cfg.get("channel_epoch"):
         fixtures = cfg.get("channel_fixture_records")
-        need(cfg.get("native_bindings_file") and
+        need((cfg.get("native_bindings_file") or claimed is not None) and
              isinstance(cfg.get("native_instance_id_hash"), str) and
              re.fullmatch(r"[0-9a-f]{64}", cfg["native_instance_id_hash"]) and
              isinstance(cfg.get("channel_workflow"), str) and
              re.fullmatch(r"[A-Za-z0-9]{8,32}", cfg["channel_workflow"]) and
              re.fullmatch(r"[0-9a-f-]{36}", cfg["channel_epoch"]) and
-             isinstance(fixtures, list) and len(fixtures) > 0 and len(fixtures) == len(set(fixtures)) and
-             all(isinstance(r, str) and re.fullmatch(r"[0-9a-f]{64}", r) for r in fixtures),
+             ((claimed is not None and fixtures is None) or
+              (isinstance(fixtures, list) and len(fixtures) > 0 and len(fixtures) == len(set(fixtures)) and
+               all(isinstance(r, str) and re.fullmatch(r"[0-9a-f]{64}", r) for r in fixtures))),
              "channel_proof_configuration_required")
     token = pathlib.Path(cfg["token_file"]).read_bytes().strip()
     need(len(token) >= 32, "short_token")
     directory = lambda: json.loads(pathlib.Path(cfg["directory_file"]).read_text())
-    lookup_rows = json.loads(pathlib.Path(cfg["lookup_file"]).read_text())
+    lookup_rows = [] if claimed is not None else json.loads(pathlib.Path(cfg["lookup_file"]).read_text())
     lookup = lambda numbers: [r for r in lookup_rows if str(r.get("number")) in numbers]
     def bindings():
         target = cfg.get("native_bindings_file")
@@ -365,7 +396,7 @@ def serve(config_path):
         return json.loads(path.read_text())
     chat = Chatwoot(cfg["account"], cfg["inbox"], cfg["channel"],
                     pathlib.Path(cfg["chatwoot_token_file"]).read_text().strip())
-    app = Intake(cfg["db_file"], cfg, chat, directory, lookup, bindings)
+    app = Intake(cfg["db_file"], cfg, chat, directory, lookup, bindings, claimed)
     planner = PlannerReservation(cfg["reservations_db_file"], cfg["db_file"], chat)
     manifest = pathlib.Path(cfg["asset_manifest_file"]).read_bytes()
     assets = pathlib.Path(cfg["asset_dir"])
@@ -400,7 +431,7 @@ def serve(config_path):
                     result = (app.receive(data) if self.path == "/inbound" else
                               planner.reserve(data) if self.path == "/reserve" else held_plan.prepare(data))
                 payload, status = json.dumps(result).encode(), 200
-            except (Held, ReservationError, PlanHeld) as exc:
+            except (Held, ReservationError, PlanHeld, ClaimClosed) as exc:
                 payload, status = json.dumps({"status": "held", "reason": str(exc)}).encode(), 409
             except Exception:
                 payload, status = b'{"status":"held","reason":"outcome_unknown"}', 503
