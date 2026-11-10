@@ -37,3 +37,9 @@ test("one selected visit covering two appointments requires its complete, consis
  assert.ok(resolve([a,b]).id);
  for(const rows of [[a],[a,a],[a,{...b,review_id:"other"}],[a,{...b,status:"provider_accepted"}],[a,{...b,content_sha256:sha("other")}],[a,{...b,destination_e164:"+1999999999"}]])assert.throws(()=>resolve(rows),/unbound_native_attempt/);
 });
+test("reactivation intake binds its own durable receipt and source messages",()=>{
+ const number="1234567890",text="Fixture reply",a={request_id:"intake",source_sha256:sha("plan"),source_message_ids:["incoming"],attempt_id:"intake-part",destination_e164:"+"+number,text_sha256:sha(text),status:"delivery_unknown",attempted_at:"2030-01-01T00:00:00Z"};
+ const rows=x=>records({reactivation:{intake_runtime:{attempts:[x]}}});
+ assert.ok(resolveAttempt(new Set(),rows(a),"sendText",{number,text}).id);
+ assert.deepEqual(rows({...a,source_message_ids:[]}),[]);
+});

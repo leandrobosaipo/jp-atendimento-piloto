@@ -33,6 +33,10 @@ export function records(s){
   for(const a of s.jp_reply_attempts||[])if(a.kind==="send")add("reply",a,a.source_message_id,a.attempt_id,a.destination_e164);
   for(const a of s.brand_education?.entries||[])add("brand",a.attempt,a.entry_id,a.attempt?.attempt_id,a.destination_e164);
   for(const a of s.reactivation?.requests||[])for(const d of a.dispatches||[])add("reactivation",d,a.request_id||a.candidate_id,d.attempt_id||d.outbound_budget_reservation_id,a.destination_e164);
+  for(const a of s.reactivation?.intake_runtime?.attempts||[]){
+    if(!a.request_id||!/^[a-f0-9]{64}$/.test(a.source_sha256||"")||!Array.isArray(a.source_message_ids)||!a.source_message_ids.length)continue;
+    add("reactivation-intake",a,JSON.stringify([a.request_id,a.source_sha256,a.source_message_ids]),a.attempt_id,a.destination_e164);
+  }
   return rows;
 }
 export function resolveAttempt(before,current,operation,payload){
