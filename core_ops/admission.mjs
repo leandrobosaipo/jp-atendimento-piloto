@@ -20,7 +20,7 @@ export function classifier(message,socketPath){
     s.on("error",reject);s.on("end",()=>{try{const o=JSON.parse(data);resolve(o.output?result(200,{output:o.output}):result(503,{error:"classification_unavailable"}));}catch{reject(Error("classifier_invalid"));}});
   });
 }
-export function operational({manifest,secrets,stateDir,inner,model}){
+export function operational({manifest,secrets,stateDir,inner,model,instance}){
   assert(Object.keys(manifest).length>0&&new Set(Object.values(manifest).map(r=>r.workflow)).size===Object.keys(manifest).length);
   const tokens=Object.values(secrets.roles);assert(tokens.length===Object.keys(manifest).length&&tokens.every(t=>typeof t==="string"&&t.length>=32)&&new Set(tokens).size===tokens.length);
   const leasePath=path.join(stateDir,"ownership.json"),ledger=path.join(stateDir,"admissions");
@@ -33,6 +33,31 @@ export function operational({manifest,secrets,stateDir,inner,model}){
     if(!body||typeof body!=="object"||Array.isArray(body))return result(400,{error:"invalid_body"});
     const gate=read(leasePath);
     if(gate.mode==="maintenance"||!["rehearsal","owned"].includes(gate.mode)||gate.owner!==secrets.owner||!safe(gate.epoch,/^[a-f0-9]{8}(-[a-f0-9]{4}){3}-[a-f0-9]{12}$/)||!(Date.now()<Date.parse(gate.until))||!gate.roles?.includes(role))return result(423,{error:"maintenance"});
+    if(route==="/api/n8n/inbound"){
+      if(role!=="inbound"||!instance||body.instance!==instance||Object.hasOwn(body,"historical_review_import")||
+          req.epoch!==gate.epoch||!safe(req.record,/^[0-9a-f]{64}$/))return result(403,{error:"inbound_scope"});
+      const name=Buffer.from(instance),length=Buffer.alloc(4);
+      length.writeUInt32BE(name.length);
+      if(sha(Buffer.concat([length,name,raw]))!==req.record)return result(403,{error:"inbound_record"});
+      const file=path.join(ledger,"inbound-"+req.record);
+      const identity={record_id:req.record,workflow,execution,node,epoch:gate.epoch};
+      try{once(file+".intent",identity);}catch(e){
+        if(e.code!=="EEXIST")throw e;
+        try{
+          const done=read(file+".done");
+          if(Object.entries(identity).every(([k,v])=>done[k]===v))return result(200,done);
+        }catch{}
+        return result(409,{error:"inbound_requires_reconciliation"});
+      }
+      try{
+        if(JSON.stringify(read(leasePath))!==JSON.stringify(gate)||Date.now()>=Date.parse(gate.until))return result(423,{error:"ownership_changed"});
+        const response=await inner({route,workflow,execution,node,epoch:gate.epoch,raw});
+        if(response.status<200||response.status>=300||response.body?.ok!==true)return result(409,{error:"inbound_requires_reconciliation"});
+        const done={...identity,ok:true,status:response.body.ignored||response.body.duplicate?"retained":"processed",
+          response_sha256:sha(JSON.stringify(response.body))};
+        once(file+".done",done);return result(200,done);
+      }catch{return result(503,{error:"inbound_requires_reconciliation"});}
+    }
     const prefix=path.join(ledger,workflow+"-"+execution+"-");
     const previous=id=>{try{const r=read(prefix+id+".done");return r.epoch===gate.epoch?r:null;}catch{return null;}};
     const stage=route.split("/").at(-1);

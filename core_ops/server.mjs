@@ -19,7 +19,7 @@ await startRenewal(config,env,()=>renewalExecution);
 const child=spawn(process.execPath,["--import","/ops-app/transport.mjs","/legacy/scripts/jp-evolution-local-api.mjs"],{env,stdio:"ignore"});
 child.on("exit",()=>process.exitCode=1).on("exit",()=>server.close());
 const innerUrl="http://127.0.0.1:8792";
-const handle=operational({manifest,secrets,stateDir,model:m=>classifier(m,"/model/interpret.sock"),inner:async({route,workflow,execution,node,epoch,raw})=>{
+const handle=operational({manifest,secrets,stateDir,instance:config.instance,model:m=>classifier(m,"/model/interpret.sock"),inner:async({route,workflow,execution,node,epoch,raw})=>{
   const renewing=route.endsWith("/renewal-run");if(renewing&&renewalExecution)return {status:409,body:{error:"renewal_busy"}};
   if(renewing)renewalExecution=execution;
   try{
@@ -39,7 +39,8 @@ const server=http.createServer(async(req,res)=>{
     if(req.method!=="POST")return reply(404,{});
     const chunks=[];let bytes=0;for await(const b of req){bytes+=b.length;if(bytes>131072)return reply(413,{});chunks.push(b);}
     const result=await handle({workflow:req.headers["x-jp-n8n-workflow-id"],execution:req.headers["x-jp-n8n-execution-id"],node:req.headers["x-jp-node-id"],
-      authorization:req.headers.authorization,route:req.url,raw:Buffer.concat(chunks)});reply(result.status,result.body);
+      authorization:req.headers.authorization,epoch:req.headers["x-jp-owner-epoch"],record:req.headers["x-jp-record-id"],
+      route:req.url,raw:Buffer.concat(chunks)});reply(result.status,result.body);
   }catch{return reply(503,{error:"operational_core_unavailable"});}
 });
 server.listen(8791,"0.0.0.0");

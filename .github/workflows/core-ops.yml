@@ -1,7 +1,7 @@
 name: Core operational contracts
 on:
   push:
-    branches: ['codex/jp-runtime-operacional-dell']
+    branches: ['codex/jp-runtime-operacional-dell', 'codex/jp-entrada-nucleo-dell']
 permissions: {contents: read}
 jobs:
   contracts:

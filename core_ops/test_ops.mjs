@@ -7,6 +7,23 @@ import {createHash,randomUUID} from "node:crypto";
 import {operational} from "./admission.mjs";
 import {acceptedKey,records,resolveAttempt} from "./dispatch.mjs";
 const sha=s=>createHash("sha256").update(s).digest("hex");
+test("inbound fences owner, role, exact envelope and duplicate executions",async t=>{
+  const root=fs.mkdtempSync(path.join(os.tmpdir(),"inbound-"));t.after(()=>fs.rmSync(root,{recursive:true}));
+  fs.mkdirSync(path.join(root,"admissions"));
+  const instance="fixture",epoch=randomUUID(),workflow="fixture01",node="receive",route="/api/n8n/inbound",token="a".repeat(40);
+  const raw=Buffer.from(JSON.stringify({instance,event:"messages.upsert",data:{}})),len=Buffer.alloc(4);
+  len.writeUInt32BE(Buffer.byteLength(instance));const record=sha(Buffer.concat([len,Buffer.from(instance),raw]));
+  const req={epoch,workflow,node,route,raw,record,execution:"71",authorization:"Bearer "+token};
+  const lease=mode=>fs.writeFileSync(path.join(root,"ownership.json"),JSON.stringify({mode,epoch,roles:["inbound"],owner:"dell",until:new Date(Date.now()+60000)}));
+  let calls=0;
+  const handle=operational({manifest:{inbound:{workflow,nodes:{[node]:route}}},secrets:{owner:"dell",roles:{inbound:token}},
+    instance,stateDir:root,inner:async input=>{calls++;assert.deepEqual(input.raw,raw);return {status:202,body:{ok:true,attendance:"confirmed"}};}});
+  lease("maintenance");assert.equal((await handle(req)).status,423);lease("rehearsal");
+  for(const patch of [{epoch:randomUUID()},{record:"0".repeat(64)},{workflow:"other"},{authorization:"bad"},{raw:Buffer.from('{"instance":"foreign"}')}])
+    assert.equal((await handle({...req,...patch})).status,403);
+  const first=await handle(req);assert.equal(first.body.status,"processed");assert.deepEqual(await handle(req),first);
+  assert.equal((await handle({...req,execution:"72"})).status,409);assert.equal(calls,1);
+});
 test("maintenance, ownership, distinct preflights, immutable attempt and close",async t=>{
   const root=fs.mkdtempSync(path.join(os.tmpdir(),"central-"));t.after(()=>fs.rmSync(root,{recursive:true}));
   fs.mkdirSync(root+"/admissions");
