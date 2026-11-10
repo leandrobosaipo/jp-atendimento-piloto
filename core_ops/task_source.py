@@ -23,7 +23,10 @@ def project(row,op):
 def rows(body,name,empty_error=False):
     need(isinstance(body,dict) and body.get('erro') in (None,0,'0',''))
     raw=body.get(name)
-    if empty_error and raw=={'erro':''} and str(body.get('recordsTotal'))=='0' and str(body.get('recordsFiltered'))=='0':return []
+    if empty_error and isinstance(raw,dict) and raw.get('erro')=='':
+        need(all(str(body.get(k))=='0' for k in ('recordsTotal','recordsFiltered')))
+        need(all(v in ('',0,'0',None) for v in raw.values()))
+        return []
     need(isinstance(raw,list) and all(isinstance(x,dict) and x.get('erro') in (None,0,'0','') for x in raw))
     for k in ('recordsFiltered','recordsTotal'):
         if k in body:need(str(body[k])==str(len(raw)))

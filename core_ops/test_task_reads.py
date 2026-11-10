@@ -1,5 +1,5 @@
 import datetime as dt,hashlib,hmac,json,unittest,uuid
-from task_source import Held,Reader,list_data
+from task_source import Held,Reader,list_data,rows
 
 class Reads(unittest.TestCase):
     def setUp(self):
@@ -43,5 +43,10 @@ class Reads(unittest.TestCase):
     def test_ambiguous_destination(self):
         self.rows[1]['Celular']=self.rows[-1]['Celular']
         with self.assertRaises(Held):self.read('clients')
+    def test_empty_native_report(self):
+        empty={'data':{'erro':'','resultado':'','DT_RowId':0,'Status':''},'recordsTotal':0,'recordsFiltered':0}
+        self.assertEqual(rows(empty,'data',True),[])
+        for bad in [{**empty,'recordsFiltered':1},{**empty,'data':{**empty['data'],'Status':'realizado'}}]:
+            with self.assertRaises(Held):rows(bad,'data',True)
 
 if __name__=='__main__':unittest.main()
