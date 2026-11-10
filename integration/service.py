@@ -61,6 +61,11 @@ class App:
             conn.execute("PRAGMA journal_mode=WAL")
             conn.execute("""CREATE TABLE IF NOT EXISTS events(req TEXT PRIMARY KEY,actor TEXT NOT NULL,question TEXT NOT NULL,options TEXT NOT NULL,state TEXT NOT NULL,incoming INTEGER UNIQUE,outgoing INTEGER,reserved_asset TEXT,asset TEXT,plan TEXT,receipt TEXT,reason TEXT,stamp TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)""")
             conn.execute("""CREATE TABLE IF NOT EXISTS parts(req TEXT NOT NULL,pos INTEGER NOT NULL,content TEXT NOT NULL,asset TEXT,private INTEGER NOT NULL,state TEXT NOT NULL DEFAULT 'pending',outgoing INTEGER UNIQUE,attachment TEXT,PRIMARY KEY(req,pos))""")
+            conn.execute("""CREATE TABLE IF NOT EXISTS human_ownership (
+                episode TEXT PRIMARY KEY, account INTEGER NOT NULL, inbox INTEGER NOT NULL,
+                conversation INTEGER NOT NULL, contact INTEGER NOT NULL, reason TEXT NOT NULL,
+                opened TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, released TEXT)""")
+            conn.execute("""CREATE UNIQUE INDEX IF NOT EXISTS human_current ON human_ownership(account,inbox,conversation) WHERE released IS NULL""")
         self.send_locks={actor:threading.Lock() for actor in settings["actors"]}
     @contextmanager
     def admission(self):
@@ -84,6 +89,56 @@ class App:
         return f"/api/v1/accounts/{self.cfg['account']}/conversations/{conv}/messages"
     def messages(self,actor):
         return local_request(13300,self.chatpath(actor),headers={"api_access_token":self.cfg["agent_token"]})["payload"]
+    def owner_key(self,actor):
+        x=self.cfg["actors"][actor]
+        return (self.cfg["account"],self.cfg["inbox"],x["conversation"],x["contact"])
+    def native_owner(self,actor):
+        account,inbox,conversation,contact=self.owner_key(actor)
+        row=local_request(13300,self.chatpath(actor).removesuffix("/messages"),headers={"api_access_token":self.cfg["agent_token"]})
+        meta=row.get("meta",{})
+        need((row.get("account_id"),row.get("inbox_id"),row.get("id"),meta.get("sender",{}).get("id"))==
+             (account,inbox,conversation,contact),"conversation_identity_mismatch")
+        need(isinstance(row.get("labels"),list) and row.get("status") in ("open","pending","resolved","snoozed"),"conversation_status_unknown")
+        if meta.get("assignee") or meta.get("team"):return "assigned"
+        if "jp-atendimento-humano" in row["labels"]:return "label"
+        if row["status"] in ("snoozed","resolved"):return row["status"]
+        return None
+    def ownership(self,actor,reason=None):
+        key=self.owner_key(actor)
+        with self.db() as db:
+            if reason:
+                db.execute("""INSERT OR IGNORE INTO human_ownership(episode,account,inbox,conversation,contact,reason)
+                              VALUES(?,?,?,?,?,?)""",(str(uuid.uuid4()),*key,reason))
+            hold=db.execute("""SELECT episode,contact,reason FROM human_ownership
+                WHERE account=? AND inbox=? AND conversation=? AND released IS NULL""",key[:3]).fetchone()
+        if hold:need(hold["contact"]==key[3],"conversation_identity_mismatch")
+        return dict(hold) if hold else None
+    def hold_event(self,row):
+        actor=row["actor"]
+        hold=self.ownership(actor)
+        if not hold:
+            reason=self.native_owner(actor)
+            if reason:hold=self.ownership(actor,reason)
+        if hold:
+            self.advance(row["req"],row["state"],"human",reason="human_ownership")
+        return bool(hold)
+    def operator_ownership(self,msg,peer_uid):
+        need(peer_uid==0,"denied")
+        actor=msg.get("actor")
+        need(actor in self.cfg["actors"],"invalid_actor")
+        key=self.owner_key(actor)
+        need((msg.get("conversation"),msg.get("contact"))==key[2:],"conversation_identity_mismatch")
+        with self.send_locks[actor]:
+            native=self.native_owner(actor)
+            if msg["op"]=="human-take":
+                return self.ownership(actor,native or "operator")
+            need(msg["op"]=="human-release" and not native,"human_still_assigned")
+            with self.db() as db:
+                changed=db.execute("""UPDATE human_ownership SET released=CURRENT_TIMESTAMP WHERE
+                    episode=? AND account=? AND inbox=? AND conversation=? AND contact=? AND released IS NULL""",
+                    (msg.get("episode"),*key)).rowcount
+            need(changed==1,"wrong_ownership_episode")
+            return {"status":"released","pending_replayed":0}
     def options(self,msg):
         op=msg.get("intent","auto")
         need(op in ("auto","price","availability","services_art","club_art"),"invalid_intent")
@@ -115,8 +170,10 @@ class App:
                 incoming=local_request(13300,path,{"content":q,"echo_id":rid})
                 mid=incoming["id"];need(type(mid) is int and mid>0,"invalid_incoming")
                 self.advance(rid,"opening","incoming",incoming=mid)
+                with self.send_locks[actor]:
+                    if self.hold_event(self.row(rid)):return self.status(rid)
                 with self.db() as c:
-                    prior=c.execute("SELECT 1 FROM events WHERE actor=? AND rowid<(SELECT rowid FROM events WHERE req=?) AND state!='done' LIMIT 1",(actor,rid)).fetchone()
+                    prior=c.execute("SELECT 1 FROM events WHERE actor=? AND rowid<(SELECT rowid FROM events WHERE req=?) AND state NOT IN ('done','human') LIMIT 1",(actor,rid)).fetchone()
                 if prior:
                     self.advance(rid,"incoming","waiting",reason="prior_event_requires_review")
                     return self.status(rid)
@@ -143,6 +200,9 @@ class App:
             need(len(match)==1,"inbox_readback_mismatch")
             self.advance(rid,"verifying","claimed");return key
         if op=="plan":
+            need(row["state"]=="claimed","held")
+            with self.send_locks[row["actor"]]:
+                if self.hold_event(row):raise Stop("human_ownership")
             self.advance(rid,"claimed","planning")
             p,asset=self.plan(row)
             private=p["decision"]=="handoff"
@@ -150,6 +210,9 @@ class App:
             with self.db() as c:
                 need(c.execute("UPDATE events SET state='prepared',plan=?,asset=? WHERE req=? AND state='planning'",(json.dumps(p,ensure_ascii=False),asset,rid)).rowcount==1,"held")
                 c.executemany("INSERT INTO parts(req,pos,content,asset,private) VALUES(?,?,?,?,?)",[(rid,i,content,aid,private) for i,(content,aid) in enumerate(parts,1)])
+                if private:
+                    c.execute("""INSERT OR IGNORE INTO human_ownership(episode,account,inbox,conversation,contact,reason)
+                              VALUES(?,?,?,?,?,'handoff')""",(rid,*self.owner_key(row["actor"])))
             return key
         need(op=="deliver","unknown_step")
         with self.send_locks[row["actor"]]:
@@ -188,6 +251,7 @@ class App:
         for part in parts:
             key=(rid,part["pos"])
             if part["state"]=="pending":
+                if not part["private"] and self.hold_event(self.row(rid)):raise Stop("human_ownership")
                 with self.db() as c:need(c.execute("UPDATE parts SET state='sending' WHERE req=? AND pos=? AND state='pending'",key).rowcount==1,"held")
                 oid=self.post_part(row,part)
                 with self.db() as c:c.execute("UPDATE parts SET state='checking',outgoing=? WHERE req=? AND pos=? AND state='sending'",(oid,*key))
@@ -291,7 +355,10 @@ class Screen(socketserver.StreamRequestHandler):
         try:
             raw=self.rfile.readline(4097);need(len(raw)<=4096 and raw.endswith(b"\n"),"oversize")
             msg=json.loads(raw)
-            if msg.get("op")=="personal-ingress":
+            if msg.get("op") in ("human-take","human-release"):
+                peer=self.connection.getsockopt(socket.SOL_SOCKET,socket.SO_PEERCRED,struct.calcsize("3i"))
+                result=self.server.app.operator_ownership(msg,struct.unpack("3i",peer)[1])
+            elif msg.get("op")=="personal-ingress":
                 peer=self.connection.getsockopt(socket.SOL_SOCKET,socket.SO_PEERCRED,struct.calcsize("3i"))
                 result=personal_ingress(self.server.app,msg,struct.unpack("3i",peer)[1])
             else:
