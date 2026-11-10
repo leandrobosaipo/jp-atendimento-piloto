@@ -48,7 +48,7 @@ def recipient_binding(submitted, verified_recipient):
     canonical = verified_recipient.removesuffix("@s.whatsapp.net")
     need(verified_recipient == canonical+"@s.whatsapp.net","unverified_destination")
     long,short=sorted((submitted,canonical),key=len,reverse=True)
-    need(re.fullmatch(r"55[0-9]{2}9[6-9][0-9]{7}",long) and short==long[:4]+long[5:], "unverified_destination")
+    need(re.fullmatch(r"55[1-9][0-9]9[6-9][0-9]{7}",long) and short==long[:4]+long[5:], "unverified_destination")
     return {"submitted":submitted,"canonical_jid":verified_recipient,"basis":"native_lookup"}
 
 

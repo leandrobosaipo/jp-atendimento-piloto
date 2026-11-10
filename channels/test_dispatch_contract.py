@@ -1,9 +1,13 @@
 import unittest
 from bridge import Held
-from dispatch_contract import INSTANCE, accepted_response, validate_request
+from dispatch_contract import INSTANCE, accepted_response, recipient_binding, validate_request
 
 
 class DispatchContract(unittest.TestCase):
+    def test_invalid_area_prefix_cannot_bind_different_numbers(self):
+        with self.assertRaises(Held):
+            recipient_binding("5501999994444","550199994444@s.whatsapp.net")
+
     def test_bound_role_operation_address_and_receipt(self):
         number = "10000000000"
         body = dict(instance=INSTANCE, operation="sendText", native_path="/message/sendText/"+INSTANCE,

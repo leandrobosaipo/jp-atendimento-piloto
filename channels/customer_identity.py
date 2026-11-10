@@ -19,7 +19,7 @@ def phone(row):
     digits = re.sub(r"\D", "", raw).removeprefix("00")
     if len(digits) in (10,11):
         digits = (re.sub(r"\D", "", first(row,"DDI","PAF_DDI","Cli_DDI")) or "55") + digits
-    return digits if re.fullmatch(r"55\d{10,11}",digits) else None
+    return digits if re.fullmatch(r"55[1-9][0-9]{9,10}",digits) else None
 
 
 def resolve(directory, verified_addresses, lookup):
