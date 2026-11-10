@@ -15,6 +15,7 @@ jobs:
           sudo unshare --net -- setpriv --reuid="$(id -u)" --regid="$(id -g)" --clear-groups --no-new-privs env -i PATH=/usr/bin:/bin python3 -B channels/test_personal.py
           sudo unshare --net -- setpriv --reuid="$(id -u)" --regid="$(id -g)" --clear-groups --no-new-privs env -i PATH=/usr/bin:/bin python3 -B channels/test_personal_media.py
           sudo unshare --net -- setpriv --reuid="$(id -u)" --regid="$(id -g)" --clear-groups --no-new-privs env -i PATH=/usr/bin:/bin python3 -B channels/test_personal_media_native.py
+          sudo unshare --net -- setpriv --reuid="$(id -u)" --regid="$(id -g)" --clear-groups --no-new-privs env -i PATH=/usr/bin:/bin python3 -B channels/test_personal_media_journal.py
           sudo unshare --net -- setpriv --reuid="$(id -u)" --regid="$(id -g)" --clear-groups --no-new-privs env -i PATH=/usr/bin:/bin REQUIRE_NETWORK_ISOLATION=1 python3 -B channels/test_evolution.py
           python3 channels/test_bridge.py
           python3 -m unittest business.test_transactions -v

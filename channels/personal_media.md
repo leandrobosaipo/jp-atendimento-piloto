@@ -57,14 +57,40 @@ preserva o plano e nunca repete parte aceita, incerta ou já entregue.
 
 `read_inbound` deve verificar de fato a autenticidade e integridade do registro
 do coletor antes de devolver o objeto. Um campo `authenticated` no webhook
-original não substitui essa releitura. O código não instala esse leitor nem
-ativa qualquer rota. A releitura `findMessages` confere identidade e conteúdo;
+original não substitui essa releitura. `personal_media_journal.py` oferece o
+leitor offline para o ledger restaurado: `JournalProofReader(journal_path,
+key_path, expected_jid=..., opened_at=..., expected_instance_id_hash=...,
+mapping=...)`. Ambos os caminhos são explícitos, privados, no mesmo diretório
+0700. O leitor abre SQLite em `mode=ro`, fixa uma transação de leitura,
+verifica hash do envelope, RSA/AES-GCM com o `meta` como AAD, hash do corpo e ID
+do arquivo. Tenta os `wrapped` dos checkpoints Evolution e exige uma única
+chave AEAD válida, inclusive após rotação. Não usa `immutable=1`, pois o banco
+recebe deltas concorrentes. Compara instância, remetente pessoal, direção,
+ID nativo, texto e horários posteriores à abertura. Dois identificadores de
+chat exigem mapeamento PN↔LID comprovado nos dois sentidos.
+
+Consulta sem efeitos: `reader.proof_only(record_id, native_id_sha256, text)`.
+Ela retorna somente `journal_verified`, `personal_sender_verified`,
+`post_open_verified`, `record_id`, `native_id_sha256` e `request`. O último é
+`UUIDv5(NAMESPACE_URL, 'jp-personal-inbound:' + native_id_sha256)`. Para iniciar
+`PersonalSequence`, injete `read_inbound=lambda record_id:
+reader.read_inbound(record_id, native_id_sha256, text)` e passe exatamente a
+prova relida a `start`. Esta função não lê um testemunho fornecido pelo webhook.
+
+`request_from_proof(proof, native_id_sha256)` monta somente o objeto para o
+receptor do painel: `{op:'personal-ingress', record_id, native_id_sha256,
+text}`. Retorna o UUIDv5 **separadamente** para conferência; o receptor deriva
+o request por conta própria. O utilitário não abre `panel.sock`, não chama
+`start` e não envia resposta. O operador autorizado deve obter os IDs da conta,
+inbox e conversa exclusivamente do ator `personal-test` do runtime do piloto;
+nenhum deles é inferido do journal. A releitura `findMessages` confere identidade e conteúdo;
 o status de entrega continua vindo de recibo autenticado separado para cada
 posição. `source_main_sha`, identidade de runtime, proteção do remetente único
 e autorização da janela são gates do executor, fora deste módulo.
 
 Execute `TMPDIR=/private/tmp python3 channels/test_personal_media.py` no macOS;
 execute também `TMPDIR=/private/tmp python3 channels/test_personal_media_native.py`;
+e `TMPDIR=/private/tmp python3 channels/test_personal_media_journal.py`;
 em Linux, use um diretório temporário real, privado e sem symlink. Os testes são
 ficcionais e não enviam mensagens. Python foi mantido porque o pin, a fila
 SQLite e os contratos de recibo do piloto já são Python padrão; introduzir
