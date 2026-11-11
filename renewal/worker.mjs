@@ -35,6 +35,7 @@ function writeCandidate(session,identity) {
 let lastStart=0;
 async function authenticate(credentials){
   let browser;
+  let phase="login";
   const trace={sent:false,otpSent:false,code:null,hold:null,success:false};
   const receipt=(event,metadata={})=>{
     const fd=fs.openSync("/private/official-auth-events.ndjson","a",0o600);
@@ -85,10 +86,21 @@ async function authenticate(credentials){
     poll:async()=>{const a=pending;pending=null;return {action:a};}};
     const session=await loginWithProvider({credentials,browserFactory,handoff,trace});
     frame=null;pending=null;state="checking_identity";
+    phase="read_official_appointments";
     const proof=await verifyCandidateSession({session,knownAppointments:known});
     if(!proof?.identity||proof.identity.matched_count<2)throw new Error("appbarber_identity_unverified");
+    phase="save_verified_session";
     writeCandidate(proof.session,proof.identity);state="verified_candidate";
-  }catch(e){state=safeFailures.has(e?.message)?e.message:"verification_failed";receipt("held",{state,credential_dispatching:trace.sent});}
+  }catch(e){
+    state=safeFailures.has(e?.message)?e.message:"verification_failed";
+    const readErrors=["session_network_error","session_auth_redirect","session_auth_rejected",
+      "session_auth_html","session_response_format_invalid","session_cookie_domain_invalid"];
+    const storageErrors=["EACCES","ENOSPC","EROFS","EEXIST"];
+    let detail=state;
+    if(phase==="read_official_appointments"&&readErrors.includes(e?.message))detail=e.message;
+    if(phase==="save_verified_session"&&storageErrors.includes(e?.code))detail=e.code;
+    receipt("held",{state,phase,detail,credential_dispatching:trace.sent});
+  }
   finally{frame=null;pending=null;attempting=false;if(browser)await browser.close().catch(()=>{});}
 }
 const sock="/ipc/operator.sock";
