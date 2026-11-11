@@ -19,6 +19,33 @@ HISTORY = '/pages/relatorios/buscaAgendamentos.php'
 SERVICES = '/pages/actions/buscaServicos.php'
 CALENDAR = '/pages/actions/buscaAgenda3.php'
 MAX_BYTES = 20_000_000
+def selected_read(path, params, today, selection):
+    if not selection or selection.get('day') != today.isoformat():
+        return None
+    br = lambda day: day.strftime('%d/%m/%Y')
+    for row in selection['members']:
+        day = dt.date.fromisoformat(row['date'])
+        if not today <= day <= today+dt.timedelta(days=7):
+            continue
+        if path==AGENDA and params=={'profissional':row['pro'],'servico':row['service'],'cliente':row['client'],
+                                      'dataini':br(day),'datafim':br(day),'tipo':'1'}:
+            return [r for r in selection['members'] if all(r[k]==row[k] for k in ('date','pro','client','service'))]
+        if path==HISTORY and params=={'edtDataIni':br(today-dt.timedelta(days=364)),'edtDataFim':br(today),
+                                     'tipoStatus':'2','AgeCliente':row['client'],'AgeProfissional':'','AgeServico':''}:
+            return []
+    return None
+
+def check_pending(rows, members):
+    if not isinstance(rows,list): raise ValueError('calendar_unverified')
+    for m in members:
+        hits=[r for r in rows if str(r.get('id'))==m['id']]
+        if len(hits)!=1: raise ValueError('appointment_changed')
+        r=hits[0]
+        if (not all(str(r.get(key))==m[field] for key,field in [('resources','pro'),('sercodigo','service'),('codCliente','client')])
+                or not str(r.get('start','')).replace('T',' ').startswith(m['date']+' '+m['time'])
+                or str(r.get('codStatus'))!='1' or str(r.get('Age_Confirmado'))!='0'):
+            raise ValueError('appointment_changed')
+
 def allowed(path, params, today, professionals):
     if not isinstance(params, dict) or not all(isinstance(v,str) for v in params.values()):
         return False
@@ -67,11 +94,23 @@ class Source(http.server.BaseHTTPRequestHandler):
             if cfg['origin']!=ORIGIN:raise ValueError()
             today=dt.datetime.now(ZoneInfo('America/Cuiaba')).date()
             professionals={v['id'] for v in cfg['professionals'].values()}
-            if not allowed(path,params,today,professionals):raise ValueError()
+            members=None
+            if not allowed(path,params,today,professionals):
+                selection=self.server.reader.parent/'agenda-selection'
+                if selection.is_file():members=selected_read(path,params,today,json.loads(selection.read_bytes()))
+                if members is None:raise ValueError()
             # Exactly one upstream per request. Native jobs own retries and freshness.
             request=urllib.request.Request(ORIGIN+path,data=urllib.parse.urlencode(params).encode(),headers={
                 'Cookie':cfg['cookieHeader'],'Origin':ORIGIN,'Referer':ORIGIN+'/index.php',
                 'Content-Type':'application/x-www-form-urlencoded; charset=UTF-8','X-Requested-With':'XMLHttpRequest'})
+            if members:
+                check=urllib.request.Request(ORIGIN+CALENDAR,headers=dict(request.header_items()),data=urllib.parse.urlencode({
+                    'profissional[]':params['profissional'],'dia':params['dataini'],'tipo':'1'}).encode())
+                with self.server.opener.open(check,timeout=8) as current:
+                    if current.status!=200 or current.geturl()!=ORIGIN+CALENDAR:raise ValueError()
+                    raw=current.read(MAX_BYTES+1)
+                    if len(raw)>MAX_BYTES:raise ValueError()
+                    check_pending(json.loads(raw),members)
             with self.server.opener.open(request,timeout=12) as r:
                 if r.status!=200 or r.geturl()!=ORIGIN+path:raise ValueError()
                 data=r.read(MAX_BYTES+1)

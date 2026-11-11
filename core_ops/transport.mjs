@@ -10,6 +10,14 @@ setStateReader(()=>{
 });
 globalThis.fetch=(url,options={})=>{
   const u=new URL(url);
+  if(u.href==="http://127.0.0.1:8792/api/confirmation-batch/start"&&options.method==="POST"){
+    const h=options.headers||{},v=JSON.parse(options.body);
+    if(!/^[a-f0-9-]{36}$/.test(h["X-JP-N8N-Manual-Request-Id"]||"")||
+        !/^[\w-]{43}$/.test(h["X-JP-N8N-Manual-Internal"]||"")||
+        v.authorization!==true||v.items?.length!==1)throw Error("unbound_batch_relay");
+    // The inner API independently matches this capability to its live operator request.
+    return fetchHook(u,options,null,h);
+  }
   if(u.origin==="http://owner.invalid"&&(options.method||"GET")==="GET"&&!u.search&&!u.hash){
     const action=u.pathname==="/instance/connectionState/"+process.env.JP_EVOLUTION_INSTANCE?"state":u.pathname==="/instance/fetchInstances"?"identity":null;
     if(!action)throw Error("observer_route_denied");
@@ -33,11 +41,11 @@ globalThis.fetch=(url,options={})=>{
 };
 // Only the three n8n job callbacks use this low-level HTTP path. No redirects.
 import http from "node:http";
-function fetchHook(url,options,token){
+function fetchHook(url,options,token,localHeaders=null){
   const body=Buffer.from(options.body||"");
   if(body.length>16384)throw Error("job_body_limit");
   return new Promise((resolve,reject)=>{
-    const q=http.request(url,{method:"POST",signal:options.signal,headers:{"Content-Type":"application/json",Authorization:"Bearer "+token,"Content-Length":body.length}},r=>{
+    const q=http.request(url,{method:"POST",signal:options.signal,headers:{...(localHeaders||{"Content-Type":"application/json",Authorization:"Bearer "+token}),"Content-Length":body.length}},r=>{
       const chunks=[];let size=0;r.on("error",reject);r.on("data",b=>{if((size+=b.length)>65536)r.destroy(Error("job_response_limit"));else chunks.push(b);});
       r.on("end",()=>resolve(new Response(Buffer.concat(chunks),{status:r.statusCode})));
     });q.on("error",reject);q.end(body);
