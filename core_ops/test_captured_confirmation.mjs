@@ -1,7 +1,13 @@
 import assert from 'node:assert/strict';
 import {consumeVisit} from './captured_visit.mjs';
-import {reconcileOne} from './captured_confirmation.mjs';
+import {reconcileOne,awaitingSessionRecovery} from './captured_confirmation.mjs';
 import {createHash} from 'node:crypto';
+const checked=Date.parse('2026-11-12T20:00:00Z');
+const stale={dispatch_sync:{status:'failed',job_id:'a',prepared_at:new Date(checked).toISOString()},
+  jp_jobs:[{job_id:'a',error:'appbarber_session_invalid'}]};
+assert.equal(awaitingSessionRecovery(stale,checked+60000,checked-1000),true);
+assert.equal(awaitingSessionRecovery(stale,checked+60000,checked+1000),false);
+assert.equal(awaitingSessionRecovery(stale,checked+900000,checked-1000),false);
 const hash=s=>createHash('sha256').update(s).digest('hex');
 const day=new Date(Date.now()+86400000).toISOString().slice(0,10);
 async function scenario({confirmed=[],held=false,unknown=false,deny=false}={}){

@@ -21,9 +21,20 @@ function revalidate(h,link){
   return target;
 }
 
+export function awaitingSessionRecovery(state,now,sessionChangedAt){
+  const sync=state.dispatch_sync;
+  if(sync?.status!=='failed' || !sync.job_id)return false;
+  const job=(state.jp_jobs||[]).findLast(j=>j.job_id===sync.job_id);
+  if(!['appbarber_session_invalid','appbarber_session_expired'].includes(job?.error))return false;
+  const checked=Date.parse(sync.prepared_at);
+  return sessionChangedAt<=checked && now>=checked && now-checked<15*60*1000;
+}
+
 export function pendingCapturedWork(h,cutoff){
   if(!Number.isFinite(Date.parse(cutoff)))return false;
   const state=h.load(),out=state.jp_reply_ack_outbox||[];
+  if(state.dispatch_sync?.status==='failed' &&
+      awaitingSessionRecovery(state,Date.now(),fs.statSync('/config/session.json').mtimeMs))return false;
   const file='/ops-config/authorized-visit-feedback.json';
   if(fs.existsSync(file)){
     const permit=JSON.parse(fs.readFileSync(file));
