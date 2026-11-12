@@ -18,3 +18,6 @@ jobs:
           node core_ops/test_captured_confirmation.mjs
           node --test core_ops/test_autonomous_same_day_reschedule.mjs core_ops/test_same_day_reschedule_integration.mjs core_ops/test_effect_guard.mjs core_ops/test_task_reads.mjs
           python3 core_ops/test_confirmation_permits.py
+          node --test core_ops/test_reschedule_policy_wake.mjs core_ops/test_captured_reschedule_executor.mjs core_ops/test_reply_reschedule_feedback_executor.mjs core_ops/test_reschedule_full_chain.mjs
+          python3 -B -m unittest discover -s core_ops -p 'test_*reschedule*.py'
+          python3 core_ops/test_capture_link_schema.py

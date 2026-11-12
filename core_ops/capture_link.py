@@ -113,9 +113,14 @@ def issue_ready_reschedules(db, read, cfg, outbound):
     The core returns a proposal only after its official reads.  A later capture
     or team event makes the issuer reject it, so this is safe to repeat.
     """
+    policy_file=CONF/'automatic-reschedules.json'
+    if not policy_file.is_file():return 0
+    policy=json.loads(policy_file.read_bytes())
+    if policy.get('enabled') is not True or not isinstance(policy.get('afterSequence'),int):return 0
     issued=0
     rows=db.execute("""SELECT c.rowid,c.* FROM captured c JOIN core_links l ON l.capture=c.rowid
-      WHERE l.status='human_review' ORDER BY c.seq LIMIT 16""").fetchall()
+      WHERE l.status='human_review' AND c.seq>? AND c.kind='text' AND l.checked>=?
+      ORDER BY c.seq DESC LIMIT 32""",(policy['afterSequence'],int(time.time())-600)).fetchall()
     cols=[d[0] for d in db.execute("SELECT c.rowid,c.* FROM captured c JOIN core_links l ON l.capture=c.rowid WHERE 0").description]
     for values in rows:
         row=dict(zip(cols,values));event=make_event(row,read,cfg,outbound)
@@ -151,7 +156,7 @@ def deliver(queue, db, read, execution):
         for row in rows:
             event=make_event(row,read,cfg,outbound)
             notices=[r[2] for r in outbound if r[0] in event['delivered']]
-            if notices and event['disposition']=='possible_confirmation':
+            if notices:
                 latest=db.execute('SELECT mid FROM team_events WHERE pn=? AND stamp>=?',(event['pn'],min(notices)))
                 event['intervened']=any(mid not in event['delivered'] for mid, in latest)
             result=call('consume',event)

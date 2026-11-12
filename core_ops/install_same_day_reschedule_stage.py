@@ -6,7 +6,8 @@ the legacy reply-plan path.
 """
 IMPORT='import {runCapturedReschedule} from "/ops-app/captured_reschedule_pipeline.mjs";\nimport {executeRescheduleFeedback} from "/ops-app/reply_reschedule_feedback_executor.mjs";\nimport {createSameDayRescheduleHelpers} from "/ops-app/same_day_reschedule_helpers.mjs";\n'
 ANCHOR="const confirmation=await runCapturedConfirmation("
-INSERT="""const reschedule=await runCapturedReschedule(capturedVisitHelpers,rescheduleHelpers);
+INSERT="""let reschedule={status:'idle'};
+        try{if(dispatchReady)reschedule=await runCapturedReschedule(capturedVisitHelpers,rescheduleHelpers);}catch{reschedule={status:'held'};}
         let rescheduleFeedback={status:'idle'};
         try{if(dispatchReady)rescheduleFeedback=await executeRescheduleFeedback(capturedVisitHelpers);}catch{rescheduleFeedback={status:'held'};}
         const confirmation=await runCapturedConfirmation("""

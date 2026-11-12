@@ -14,9 +14,24 @@ const named = text => [...new Set([[/\bpedro\b/,'16897547'],[/\balysson\b|\balis
 const affirmative=text=>/\b(?:pode\s+(?:mudar|trocar|remarcar|reagendar)\s+(?:para|pra)|(?:vamos\s+)?(?:mudar|trocar|remarcar|reagendar)\s+(?:para|pra)|combinamos\s+(?:as|para|pra)|ficou\s+(?:as|para|pra))\b/.test(String(text||'').normalize('NFD').replace(/\p{Diacritic}/gu,'').toLowerCase())&&!/\b(?:nao|cancel\w*|desmarc\w*|talvez|se|seria|poderia|consegue|ocupad\w*|disponivel|acho)\b/.test(String(text||'').normalize('NFD').replace(/\p{Diacritic}/gu,'').toLowerCase());
 export function reschedulePolicyEligible(link,policy,cutoff){
  const e=link?.sourceEvent,after=Date.parse(policy?.afterUtc),at=Date.parse(e?.at),cut=Date.parse(cutoff);
+ const phrase=String(e?.text||'').normalize('NFD').replace(/\p{Diacritic}/gu,'').trim().toLowerCase();
+ const explicit=/^(?:(?:pedro|alysson|alisson)\s*,?\s+)?(?:(?:(?:pode|vamos)\s+)?(?:mudar|trocar|remarcar|reagendar)(?: o horario)?\s+(?:para|pra)|combinamos\s+(?:as|para|pra))\s*([01]?\d|2[0-3])(?:(?::|h)[0-5]\d|h)?(?:,? por favor)?[.!?]?$/u;
+ if(!explicit.test(phrase)||phrase.includes('combinamos')&&phrase.endsWith('?'))return false;
  return policy?.enabled===true&&Number.isInteger(policy.afterSequence)&&Number.isFinite(after)&&Number.isFinite(at)&&Number.isFinite(cut)
   && e.capture_sequence>policy.afterSequence&&at>=after&&at>=cut&&link.status==='human_review'&&!link.reschedule&&e.providerTime===true&&!e.intervened&&!e.conflict
   && targetTime(e.text).length===1&&!changedDate(e.text)&&affirmative(e.text);
+}
+
+// Only the hold introduced by this very capture can be discounted for a move.
+// All earlier feedback, manual holds, opt-outs and support remain authoritative.
+export function matchMoveSource(link,state,h){
+  const event=link.sourceEvent;
+  if(Object.values(state.dell_reply_links||{}).some(other=>other.key!==link.key&&other.notice===link.notice))return {status:'visit_review'};
+  const earlier={...state,jp_responses:(state.jp_responses||[]).filter(row=>!(
+    row.source==='dell_capture' && row.message_id===event.mid && row.outbound_message_id===link.notice &&
+    link.appointments.includes(row.appointment_id)
+  ))};
+  return matchVisit(event,state,{...h,feedback:c=>h.feedback(c,earlier)});
 }
 
 export async function prepareCapturedSameDayReschedule(h, {fetchImpl=fetch}={}) {
@@ -24,7 +39,7 @@ export async function prepareCapturedSameDayReschedule(h, {fetchImpl=fetch}={}) 
   let policy;try{policy=JSON.parse(fs.readFileSync('/ops-config/automatic-reschedules.json','utf8'));}catch{return {status:'idle'};}
   for(const link of Object.values(state.dell_reply_links||{})){
     if(!reschedulePolicyEligible(link,policy,policy.afterUtc))continue;
-    const event=link.sourceEvent, target=matchVisit(event,state,h);
+    const event=link.sourceEvent, target=matchMoveSource(link,state,h);
     const members=target.members||[];
     const times=targetTime(event.text), people=named(event.text);
     let reason=null;
@@ -63,7 +78,12 @@ export async function prepareCapturedSameDayReschedule(h, {fetchImpl=fetch}={}) 
         current.reschedule={state:'grant_required',...proposal,at:new Date().toISOString()};state.version=(state.version||0)+1;h.save(state);return {status:'grant_required',task_id:task.task_id,proposal};
       }
     }catch{reason='official_availability_unverified';}
-    link.reschedule={state:'human_review',reason,at:new Date().toISOString()};state.version=(state.version||0)+1;h.save(state);return {status:'human_review',reason};
+    state=h.load();
+    const remaining=state.dell_reply_links?.[link.key];
+    if(remaining?.sourceEvent?.mid===event.mid && remaining.status==='human_review' && !remaining.reschedule){
+      remaining.reschedule={state:'human_review',reason,at:new Date().toISOString()};state.version=(state.version||0)+1;h.save(state);
+    }
+    return {status:'human_review',reason};
   }
   return {status:'idle'};
 }

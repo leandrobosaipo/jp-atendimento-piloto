@@ -15,11 +15,16 @@ export function queueRescheduleFeedback(state,p){
 
 const sameSlot=(p,slot)=>slot&&slot.date===p.slot.date&&slot.time===p.slot.time&&String(slot.professional_code)===String(p.slot.professional_code)&&String(slot.service_code)===String(p.slot.service_code)&&slot.duration_minutes===p.slot.duration_minutes;
 export async function executePreparedReschedule(h,{grantPresent,recheck,move,enqueueFeedback}){
- const state=h.load();
+ let state=h.load();
  for(const link of Object.values(state.dell_reply_links||{})){
-  const p=link.reschedule;if(!p||p.state!=='grant_required')continue;
-  if(!await grantPresent(p))return {status:'grant_required'};
+  let p=link.reschedule;if(!p||p.state!=='grant_required')continue;
+  if(p.at && Date.parse(p.at)<=Date.now()-240000)continue;
+  if(!await grantPresent(p))continue;
   if(!sameSlot(p,await recheck(p)))return {status:'held'};
+  state=h.load();
+  const currentProposal=state.dell_reply_links?.[p.source]?.reschedule;
+  if(!currentProposal||JSON.stringify(currentProposal)!==JSON.stringify(p))return {status:'held'};
+  p=currentProposal;
   if((state.jp_reply_attempts||[]).some(a=>a.task_id===p.task_id&&a.kind==='move'))return {status:'write_unknown'};
   state.jp_reply_attempts||=[];state.jp_reply_attempts.push({task_id:p.task_id,kind:'move',status:'write_unknown',attempted_at:new Date().toISOString(),appointment_id:p.appointment_id,client_code:p.client,destination_e164:p.phone,source_sha256:p.source,before:{...p.before,appointment_id:p.appointment_id},option:p.slot});p.state='write_pending';state.version=(state.version||0)+1;h.save(state);
   const outcome=await move(p),after=outcome?.readback;

@@ -12,9 +12,14 @@ async function evidence(h,state,row){
  return after?.appointment_id===p.appointment_id&&after?.client_code===p.client&&after?.professional_code===p.slot.professional_code&&after?.service_code===p.slot.service_code&&String(after?.start||'').startsWith(p.slot.date+'T'+p.slot.time)&&after?.status==='1';
 }
 export async function executeRescheduleFeedback(h,fetchImpl=fetch){
- const state=h.load(),row=(state.jp_reply_ack_outbox||[]).filter(rowIsSafe).sort((a,b)=>a.id.localeCompare(b.id))[0];
+ let state=h.load(),row=(state.jp_reply_ack_outbox||[]).filter(rowIsSafe).sort((a,b)=>a.id.localeCompare(b.id))[0];
  if(!row)return {status:'idle'};
+ const version=state.version;
  if(!await evidence(h,state,row))return {status:'held'};
+ state=h.load();
+ if(state.version!==version || h.blocked?.(state,row.destination_e164))return {status:'held'};
+ row=state.jp_reply_ack_outbox.find(item=>item.id===row.id);
+ if(!rowIsSafe(row) || Object.values(state.dell_reply_links||{}).some(other=>other.key!==row.link_key && other.appointments?.includes(row.appointment_ids[0]) && Date.parse(other.at)>=Date.parse(row.source_at)))return {status:'held'};
  state.jp_reply_attempts||=[];if(state.jp_reply_attempts.some(x=>x.attempt_id===row.id))return {status:'delivery_unknown'};
  state.jp_reply_attempts.push({kind:'send',attempt_id:row.id,source_message_id:row.inbound_message_id,destination_e164:row.destination_e164,text:row.text,status:'delivery_unknown',ack_id:row.id,attempted_at:new Date().toISOString()});row.state='delivery_unknown';state.version=(state.version||0)+1;h.save(state);
  let res,body;try{res=await fetchImpl('http://owner.invalid/message/sendText/'+h.instance,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({number:row.destination_e164.slice(1),text:row.text}),redirect:'error'});body=await res.json();}catch{return {status:'delivery_unknown'};}

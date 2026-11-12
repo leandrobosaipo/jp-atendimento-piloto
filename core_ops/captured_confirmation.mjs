@@ -36,7 +36,7 @@ export function pendingCapturedWork(h,cutoff){
        && !(state.jp_reply_attempts||[]).some(a=>a.source_message_id===permit.inbound_message_id && a.kind==='send')
        && !out.some(r=>r.link_key===link.key && r.state!=='queued'))return true;
   }
-  if(Object.values(state.dell_reply_links||{}).some(link=>link.reschedule?.state==='grant_required'))return true;
+  if(Object.values(state.dell_reply_links||{}).some(link=>link.reschedule?.state==='grant_required'&&Date.parse(link.reschedule.at)>Date.now()-240000))return true;
   try{const policy=JSON.parse(fs.readFileSync('/ops-config/automatic-reschedules.json','utf8'));if(Object.values(state.dell_reply_links||{}).some(link=>reschedulePolicyEligible(link,policy,cutoff)))return true;}catch{}
   return Object.values(state.dell_reply_links||{}).some(link=>{
     if(!(Date.parse(link.at)>=Date.parse(cutoff)))return false;
