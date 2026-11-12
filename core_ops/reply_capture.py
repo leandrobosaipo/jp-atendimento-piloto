@@ -64,7 +64,12 @@ def classify(message):
 def intent(text):
     t = unicodedata.normalize("NFC", text).casefold().replace("\ufe0f", "").strip()
     t = "".join(c for c in t if not 0x1f3fb <= ord(c) <= 0x1f3ff)
-    return "possible_confirmation" if t in {"👍", "✅", "sim", "confirmo", "confirmado"} else "review"
+    t = " ".join(t.split()).rstrip(".! ")
+    return "possible_confirmation" if t in {
+        "👍", "✅", "sim", "ok", "confirmo", "confirmado", "confirmada",
+        "sim, confirmo", "sim, confirmado", "confirmo sim", "confirmo minha presença",
+        "presença confirmada", "está confirmado", "tá confirmado"
+    } else "review"
 
 
 def tick(queue, db, reader):

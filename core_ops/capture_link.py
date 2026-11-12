@@ -126,6 +126,9 @@ def deliver(queue, db, read, execution):
                 latest=db.execute('SELECT mid FROM team_events WHERE pn=? AND stamp>=?',(event['pn'],min(notices)))
                 event['intervened']=any(mid not in event['delivered'] for mid, in latest)
             result=call('consume',event)
+            if result.get('confirmRequest'):
+                from confirmation_permits import issue
+                issue(ROOT,CONF,row,event,result['confirmRequest'],db,queue)
             status=result['status'];outcomes[status]=outcomes.get(status,0)+1
             db.execute('INSERT OR REPLACE INTO core_links VALUES(?,?,?,?,?)',(row['rowid'],status,result['members'],int(time.time()),execution))
     return {'processed':len(rows),'outcomes':outcomes}

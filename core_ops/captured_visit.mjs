@@ -75,8 +75,14 @@ export async function consumeVisit(event, h, preview=false) {
   const previous=Object.values(seen).filter(v=>notice && v.notice===notice && v.key!==key);
   if (previous.some(v=>v.status==='human_review'||v.status==='human_hold'||Date.parse(v.at)>Date.parse(event.at)))status='human_review';
   const human=['human_hold','human_review'].includes(status);
-  if (receipt && receipt.status===status) return {status,members:appointments.length};
+  const grantable=status==='awaiting_official' && target.status==='matched' && !expired
+    && proofs.length===appointments.length && proofs.every((p,i)=>p.status==='1' && p.appointment_id===appointments[i])
+    && !previous.some(v=>v.mid!==event.mid);
+  const confirmRequest=grantable ? {key,client:target.candidate.client_code,phone:target.candidate.destination_e164,
+    ids:appointments,notice,at:event.at} : null;
+  if (receipt && receipt.status===status) return {status,members:appointments.length,confirmRequest};
   seen[key]={key,status,mid:event.mid,at:event.at,kind:event.kind,record:event.record,notice:notice||null,appointments,checkedAt:new Date().toISOString()};
+  if(grantable)seen[key].confirmationEvidence={event,snapshots:target.members.map(h.snapshot)};
   if (notice && target.candidate && appointments.length) {
     state.messages||=[];
     if(!state.messages.some(m=>m.instance===h.instance && m.message_id===event.mid)){
@@ -106,7 +112,7 @@ export async function consumeVisit(event, h, preview=false) {
     }
   }
   state.version++; h.save(state);
-  return {status,members:appointments.length,noticeLinked:!!notice};
+  return {status,members:appointments.length,noticeLinked:!!notice,confirmRequest};
 }
 
 export function serveCapture(h){

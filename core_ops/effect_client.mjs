@@ -4,7 +4,7 @@ import {createHash,timingSafeEqual} from "node:crypto";
 import {admitted,withTask} from "./task_reads.mjs";
 import {approval,guardedPost,nativeScope,wireOperation} from "./effect_guard.mjs";
 const current=new AsyncLocalStorage();
-function socket(request,signal){
+export function socket(request,signal){
   const body=JSON.stringify(request);if(Buffer.byteLength(body)>24000)throw Error("effect_packet_too_large");
   return new Promise((resolve,reject)=>{
     const q=http.request({method:"POST",socketPath:"/model/task-effects.sock",path:"/v1",signal,headers:{"Content-Type":"application/json","Content-Length":Buffer.byteLength(body)}},r=>{

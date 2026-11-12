@@ -1,7 +1,7 @@
 name: Captura de respostas da agenda JP
 on:
   push:
-    branches: ['codex/jp-associacao-respostas-dell']
+    branches: ['codex/jp-associacao-respostas-dell','codex/jp-confirmacao-oficial-dell']
 permissions:
   contents: read
 jobs:
@@ -15,3 +15,5 @@ jobs:
           python3 core_sync/test_selected_agenda.py
           python3 core_sync/test_source.py
           node core_ops/test_captured_visit.mjs
+          node core_ops/test_captured_confirmation.mjs
+          python3 core_ops/test_confirmation_permits.py
