@@ -115,6 +115,27 @@ export async function consumeVisit(event, h, preview=false) {
   return {status,members:appointments.length,noticeLinked:!!notice,confirmRequest};
 }
 
+// Transport-free projection. The reply workflow is the only allowed consumer.
+export function projectOfficialAcknowledgements(state, cutoff) {
+  if(!Number.isFinite(Date.parse(cutoff)))throw Error('ack_cutoff_required');
+  const links=Object.values(state.dell_reply_links||{}), responses=state.jp_responses||[];
+  const out=state.jp_reply_ack_outbox||=[]; let created=0;
+  for(const link of links){
+    // The cutoff is the activation high-water of inbound events.  A later
+    // official re-read must never turn an older client reply into a new send.
+    if(link.status!=='official_confirmed'||Date.parse(link.at)<Date.parse(cutoff)||!link.key||!Array.isArray(link.appointments)||!link.appointments.length)continue;
+    const related=responses.filter(r=>r.message_id===link.mid&&r.source==='dell_capture'&&link.appointments.includes(r.appointment_id));
+    const destinations=[...new Set(related.map(r=>r.destination_e164).filter(Boolean))];
+    if(destinations.length!==1||related.length!==link.appointments.length)continue;
+    const id=digest(JSON.stringify([link.key,link.appointments]));
+    if(out.some(x=>x.id===id))continue;
+    out.push({id,link_key:link.key,appointment_ids:[...link.appointments],destination_e164:destinations[0],
+      inbound_message_id:link.mid,kind:(link.kind==='reaction'||link.kind==='emoji_text')?'emoji':'text',
+      text:(link.kind==='reaction'||link.kind==='emoji_text')?'👍':'Confirmado.',state:'queued',created_at:new Date().toISOString()});created++;
+  }
+  return {created,queued:out.filter(x=>x.state==='queued').length};
+}
+
 export function serveCapture(h){
   const file='/state/.jp-reply-ingress.sock',token=fs.readFileSync('/ops-config/reply-ingress.key','utf8').trim();
   if(!/^[a-f0-9]{64}$/.test(token)) throw Error('invalid_capture_key');

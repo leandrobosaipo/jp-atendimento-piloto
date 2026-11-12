@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import {createHash} from 'node:crypto';
-import {consumeVisit} from './captured_visit.mjs';
+import {consumeVisit,projectOfficialAcknowledgements} from './captured_visit.mjs';
 
 const sha=v=>createHash('sha256').update(v).digest('hex');
 const date=new Date(Date.now()+86400000).toISOString().slice(0,10);
@@ -32,4 +32,23 @@ for(const change of [{quote:'different'},{delivered:[]},{disposition:'removed'},
  await consumeVisit({...e,mid:'another',content:sha('removed'),disposition:'removed'},h);
  assert.equal(Object.values(state.dell_reply_links).at(-1).status,'human_review');
 }
+{
+  const {h,e,state}=fixture([true]);
+  await consumeVisit(e,h);
+  const cutoff=new Date(Date.now()-1000).toISOString();
+  assert.deepEqual(projectOfficialAcknowledgements(state,cutoff),{created:1,queued:1});
+  const [ack]=state.jp_reply_ack_outbox;
+  assert.equal(ack.kind,'emoji');assert.equal(ack.text,'👍');
+  assert.equal(ack.destination_e164,'+5500000000000');
+  assert.deepEqual(projectOfficialAcknowledgements(state,cutoff),{created:0,queued:1});
+  assert.deepEqual(projectOfficialAcknowledgements(state,new Date(Date.now()+1000).toISOString()),{created:0,queued:1});
+}
+{
+  const {h,e,state}=fixture([true]);
+  await consumeVisit(e,h);
+  const link=Object.values(state.dell_reply_links)[0];
+  link.at='2020-01-01T00:00:00.000Z';link.checkedAt=new Date().toISOString();
+  assert.deepEqual(projectOfficialAcknowledgements(state,'2026-11-12T00:00:00.000Z'),{created:0,queued:0});
+}
+assert.throws(()=>projectOfficialAcknowledgements({},'not-a-date'),/ack_cutoff_required/);
 console.log('captured_visit: association, official readback, hold, deduplication and preview passed');
