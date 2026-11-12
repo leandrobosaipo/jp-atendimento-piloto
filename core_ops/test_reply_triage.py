@@ -46,6 +46,11 @@ class ReplyTriageTests(unittest.TestCase):
         triage.run_tick(self.db, self.deliver, now=1000)
         self.assertIn("Recebi. Vou conferir o horário com a equipe.", self.calls[0].note)
 
+    def test_context_only_uses_proven_fields(self):
+        note = triage.render_note("human_review", "text", "review", "marker", [{"name":"Ana","date":"2026-11-13","time":"15:00","service":"Manutenção"}])
+        self.assertIn("Nome: Ana", note)
+        self.assertNotIn("telefone", note.casefold())
+
     def test_retry_after_delivery_error_does_not_persist_claim(self):
         with self.assertRaises(RuntimeError):
             triage.run_tick(self.db, lambda _case: (_ for _ in ()).throw(RuntimeError("offline")), now=1000)

@@ -20,17 +20,30 @@ DB = Path("/var/lib/jp-reply-capture/replies.sqlite3")
 TEAM = Path("/etc/atendimento-piloto-customer-ingress/team-service.json")
 
 
+def _context(case: reply_triage.Case) -> list[dict]:
+    """Read only the exact Dell reply-link; emit no destination or original text."""
+    program = r'''import fs from 'node:fs';import crypto from 'node:crypto';import {decodeStateEnvelope} from '/legacy/scripts/jp-state-envelope.mjs';
+const q=JSON.parse(fs.readFileSync(0));const c=JSON.parse(fs.readFileSync('/config/runtime.json'));const s=JSON.parse(decodeStateEnvelope(JSON.parse(fs.readFileSync('/state/state.json')),Buffer.from(c.stateKey,'hex')));const k=crypto.createHash('sha256').update(JSON.stringify([q.mid,q.fp])).digest('hex');const l=(s.dell_reply_links||{})[k];if(!l){console.log('[]');process.exit(0)};const all=[...(s.candidates||[]),...(s.initial_confirmations||[])];const out=[];for(const id of l.appointments||[]){const x=all.find(v=>String(v.appointment_id)===String(id));out.push(x?{name:x.name||x.first_name||null,date:x.appointment_date||x.date||null,time:x.appointment_time||x.time||null,service:x.service||x.service_code||null}:{name:null,date:null,time:null,service:null})}console.log(JSON.stringify(out));'''
+    value = subprocess.check_output(
+        ["docker", "exec", "-i", "jp-core-operacional", "node", "--input-type=module", "-e", program],
+        input=json.dumps({"mid": case.message_id, "fp": case.fingerprint}), text=True, timeout=20,
+    )
+    data = json.loads(value)
+    return data if isinstance(data, list) else []
+
+
 def _chatwoot(case: reply_triage.Case) -> tuple[int, int]:
     """Create/re-read only an internal API-channel note; never a public message."""
     config = json.loads(TEAM.read_bytes())
     if config.get("account") != 2 or config.get("inbox") != 3:
         raise RuntimeError("unexpected_team_inbox")
+    note = reply_triage.render_note(case.status, case.kind, case.disposition, case.marker, _context(case))
     payload = {
         "account": 2,
         "inbox": 3,
         "marker": case.marker,
         "origin": case.origin_hash,
-        "note": case.note,
+        "note": note,
         "source": "jp-reply-triage/" + str(case.capture),
     }
     ruby = r'''

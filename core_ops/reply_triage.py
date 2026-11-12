@@ -26,6 +26,8 @@ class Case:
     kind: str
     disposition: str
     received_at: str
+    message_id: str
+    fingerprint: str
     note: str
 
 
@@ -50,19 +52,29 @@ def suggested_action(status: str, kind: str, disposition: str) -> str:
     return "Revisar o contexto e a visita antes de responder. Não confirmar, cadastrar ou enviar automaticamente."
 
 
+def render_note(status: str, kind: str, disposition: str, marker: str, context: list[dict] | None = None) -> str:
+    if context:
+        facts = "; ".join(
+            "Nome: {name}. Visita: {date} às {time}. Serviço: {service}.".format(
+                name=x.get("name") or "a identificar",
+                date=x.get("date") or "a identificar",
+                time=x.get("time") or "a identificar",
+                service=x.get("service") or "a identificar",
+            ) for x in context
+        )
+    else:
+        facts = "Identidade ou visita ainda não comprovada; não inferir dados."
+    return "Triagem humana — retorno WhatsApp retido. " + facts + " " + suggested_action(status, kind, disposition) + " Origem e conteúdo original permanecem no registro privado. " + marker
+
+
 def make_case(row: sqlite3.Row) -> Case:
     status = row["status"]
     if status not in ALLOWED:
         raise ValueError("ineligible_status")
     origin_hash = _origin(row["address_hashes"])
     marker = "JP-TRIAGEM-CAPTURA-" + sha256(f"{row['capture']}:{row['message_id']}".encode()).hexdigest()
-    note = (
-        "Triagem humana — retorno WhatsApp retido. "
-        + suggested_action(status, row["kind"], row["disposition"])
-        + " Origem, mensagem e vínculo original permanecem no registro privado. "
-        + marker
-    )
-    return Case(row["capture"], marker, origin_hash, status, row["kind"], row["disposition"], row["received_at"], note)
+    note = render_note(status, row["kind"], row["disposition"], marker)
+    return Case(row["capture"], marker, origin_hash, status, row["kind"], row["disposition"], row["received_at"], row["message_id"], row["content_sha256"], note)
 
 
 def setup(db: sqlite3.Connection) -> None:
@@ -85,7 +97,7 @@ def _claim(db: sqlite3.Connection, now: int) -> Case | None:
         db.execute("DELETE FROM triage_cases WHERE state='claiming' AND claimed_at<?", (now - STALE_CLAIM_SECONDS,))
         watermark, = db.execute("SELECT capture FROM triage_watermark WHERE slot=1").fetchone()
         row = db.execute(
-            """SELECT c.rowid AS capture,c.message_id,c.address_hashes,c.kind,c.disposition,c.received_at,l.status
+            """SELECT c.rowid AS capture,c.message_id,c.content_sha256,c.address_hashes,c.kind,c.disposition,c.received_at,l.status
                  FROM captured c JOIN core_links l ON l.capture=c.rowid
                  LEFT JOIN triage_cases t ON t.capture=c.rowid
                  WHERE l.status IN ('identity_review','visit_review','human_review','human_hold','captured')
