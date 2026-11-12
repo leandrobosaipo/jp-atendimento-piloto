@@ -12,6 +12,7 @@ import sys
 import time
 
 import reply_capture as capture
+import capture_link
 
 sys.path.insert(0, "/opt/jp-dispatch/current")
 from dispatch_service import read_record
@@ -50,6 +51,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
         source = capture.ROOT / "data/index/receive.sqlite3"
         with sqlite3.connect(source.as_uri() + "?mode=ro", uri=True) as queue, capture.connect() as db:
             result = capture.tick(queue, db, lambda rid: read_record(capture.ROOT, rid, 65534))
+            if capture.DB == Path("/var/lib/jp-reply-capture/replies.sqlite3"):
+                result["linked"] = capture_link.deliver(queue, db, lambda rid: read_record(capture.ROOT, rid, 65534), execution)
             with db:
                 db.execute("CREATE TABLE IF NOT EXISTS ticks(execution TEXT PRIMARY KEY, at INTEGER, summary TEXT)")
                 db.execute("INSERT OR IGNORE INTO ticks VALUES(?,?,?)", (execution, int(time.time()), json.dumps(result)))

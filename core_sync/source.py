@@ -1,6 +1,8 @@
 """Fixed AppBarber read contract for the isolated transactional core."""
 import datetime as dt
 import http.server
+import hmac
+import re
 import json
 import os
 import socket
@@ -102,7 +104,17 @@ class Source(http.server.BaseHTTPRequestHandler):
             today=dt.datetime.now(ZoneInfo('America/Cuiaba')).date()
             professionals={v['id'] for v in cfg['professionals'].values()}
             members=None
-            if not allowed(path,params,today,professionals):
+            exact = body.get('captureVisit')
+            if exact is not None:
+                token = (self.server.reader.parent/'reply-ingress').read_text().strip()
+                if not hmac.compare_digest(token,self.headers.get('X-JP-Visit-Read','')) or path!=CALENDAR:
+                    raise ValueError('unauthorized visit read')
+                if set(exact)!={'id','client','service','time'} or not all(re.fullmatch(r'[0-9]{1,18}',exact[k]) for k in ('id','client','service')) or not re.fullmatch(r'(?:[01][0-9]|2[0-3]):[0-5][0-9]',exact['time']):
+                    raise ValueError('invalid visit')
+                day=dt.datetime.strptime(params['dia'],'%d/%m/%Y').date()
+                if not today<=day<=today+dt.timedelta(days=8) or params!={'profissional[]':params['profissional[]'],'dia':day.strftime('%d/%m/%Y'),'tipo':'1'} or params['profissional[]'] not in professionals:
+                    raise ValueError('invalid visit window')
+            elif not allowed(path,params,today,professionals):
                 selection=self.server.reader.parent/'agenda-selection'
                 if selection.is_file():members=selected_read(path,params,today,json.loads(selection.read_bytes()))
                 if members is None or path==CALENDAR and params.get('profissional[]') not in professionals:raise ValueError()
@@ -122,6 +134,15 @@ class Source(http.server.BaseHTTPRequestHandler):
                 if r.status!=200 or r.geturl()!=ORIGIN+path:raise ValueError()
                 data=r.read(MAX_BYTES+1)
             if len(data)>MAX_BYTES or not isinstance(json.loads(data),(dict,list)):raise ValueError()
+            if exact is not None:
+                rows=json.loads(data)
+                if not isinstance(rows,list):raise ValueError('invalid calendar')
+                matches=[r for r in rows if str(r.get('id'))==exact['id']]
+                if len(matches)!=1:raise ValueError('identity')
+                row=matches[0]
+                if not all(str(row.get(k))==v for k,v in [('codCliente',exact['client']),('sercodigo',exact['service']),('resources',params['profissional[]'])]) or not str(row.get('start','')).startswith(day.isoformat()+'T'+exact['time']) or str(row.get('codStatus'))!='1' or str(row.get('Age_Confirmado')) not in ('0','1'):
+                    raise ValueError('visit changed')
+                data=json.dumps([{k:row.get(k) for k in ('id','codCliente','sercodigo','resources','start','end','codStatus','Age_Confirmado','CIt_Codigo')}]).encode()
             if members and path==CALENDAR:
                 data=json.dumps(selected_calendar(json.loads(data),members)).encode()
             self.send_response(200);self.send_header('Content-Type','application/json');self.send_header('Content-Length',str(len(data)));self.end_headers();self.wfile.write(data)

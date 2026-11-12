@@ -1,0 +1,99 @@
+"""Deliver verified received records locally to the core on the existing n8n tick."""
+import datetime as dt
+import hashlib
+import http.client
+import json
+from pathlib import Path
+import socket
+import sqlite3
+import time
+
+import reply_capture as cap
+
+CONF = Path('/etc/jp-reply-capture')
+ROOT = Path('/var/lib/jp-migracao-revisao/core-operacional')
+SOCKET = ROOT/'state/.jp-reply-ingress.sock'
+LEDGER = Path('/var/lib/jp-dispatch/ledger.sqlite3')
+
+def identity(data, pairs):
+    key=data.get('key') or {}
+    addresses={v for v in (key.get('remoteJid'),key.get('remoteJidAlt'),data.get('remoteJidAlt')) if v}
+    if not addresses or not all(isinstance(a,str) and cap.DIRECT.fullmatch(a) for a in addresses):
+        return ''
+    found=set()
+    for a in addresses:
+        h=cap.digest(a)
+        if a.endswith('@s.whatsapp.net'):
+            found.add(h)
+        else:
+            pns=[p['pn'] for p in pairs if p['lid']==h]
+            if len(pns)!=1 or sum(p['pn']==pns[0] for p in pairs)!=1:return ''
+            found.add(pns[0])
+    return next(iter(found)) if len(found)==1 else ''
+
+def call(action, data=None):
+    conn=http.client.HTTPConnection('localhost',timeout=12)
+    with socket.socket(socket.AF_UNIX) as sock:
+        sock.settimeout(12);sock.connect(str(SOCKET));conn.sock=sock
+        conn.request('POST','/'+action,body=json.dumps(data or {}).encode(),headers={'Authorization':'Bearer '+(CONF/'bind.key').read_text().strip()})
+        response=conn.getresponse()
+        if response.status!=200:raise RuntimeError('core_capture_unavailable')
+        return json.loads(response.read(2048))
+
+def make_event(row, read, cfg, outbound):
+    meta,raw=read(row['record_id'])
+    env=(raw if isinstance(raw,list) else [raw])[row['envelope_pos']]
+    packet=env['data']
+    msg=(packet if isinstance(packet,list) else [packet])[row['item_pos']]
+    assert env['instance']==cap.INSTANCE and msg['key']['fromMe'] is False and msg['key']['id']==row['message_id']
+    kind,disposition,quote,content=cap.classify(msg.get('message') or {})
+    assert kind==row['kind'] and quote==row['quoted_id']
+    pn=identity(msg,cfg['pairs'])
+    received=dt.datetime.fromisoformat(meta['receivedAt'].replace('Z','+00:00'))
+    stamp=msg.get('messageTimestamp');trusted=False;at=received
+    if isinstance(stamp,(int,float,str)) and str(stamp).isdigit():
+        stamp=int(stamp);stamp=stamp/1000 if stamp>10**12 else stamp
+        if 0<stamp<=received.timestamp()+60:
+            at=dt.datetime.fromtimestamp(stamp,dt.timezone.utc);trusted=True
+    known=[e for e in outbound if e[1]==pn and e[2]<=at.timestamp()+1]
+    verified={e[0] for e in known if e[0] in cfg['delivered']}
+    return dict(mid=row['message_id'],record=row['record_id'],content=row['content_sha256'],
+        pn=pn,at=at.isoformat(),providerTime=trusted,kind=kind,disposition=disposition,
+        text=(content[:1500] if kind in ('text','emoji_text','reaction') else ''),quote=quote,
+        delivered=sorted(verified),humanNotices=[m for m in verified if m in cfg.get('humanNotices',[])],intervened=False,conflict=row['disposition']=='changed_review')
+
+def agent_intervened(queue, read, cfg, event, start):
+    # On a new positive only, check the original conversation for a later team message.
+    # The output is cached for pending agenda reads; do not scan on idle ticks.
+    for rid, in queue.execute('SELECT id FROM receipts WHERE seq>=? ORDER BY seq',(cfg['startSeq'],)):
+        meta,envs=read(rid)
+        if dt.datetime.fromisoformat(meta['receivedAt'].replace('Z','+00:00')).timestamp()+1<start:continue
+        for env in envs if isinstance(envs,list) else [envs]:
+            if env.get('instance')!=cap.INSTANCE or str(env.get('event')).lower().replace('_','.')!='messages.upsert':continue
+            body=env.get('data')
+            for x in body if isinstance(body,list) else [body]:
+                if not isinstance(x,dict) or (x.get('key') or {}).get('fromMe') is not True or identity(x,cfg['pairs'])!=event['pn']:continue
+                if x['key'].get('id') not in event['delivered']:return True
+    return False
+
+def deliver(queue, db, read, execution):
+    db.execute('CREATE TABLE IF NOT EXISTS core_links(capture INTEGER PRIMARY KEY,status TEXT, members INTEGER,checked INTEGER,execution TEXT)')
+    with db:
+        pending=db.execute("""SELECT c.rowid,c.* FROM captured c LEFT JOIN core_links l ON c.rowid=l.capture
+          WHERE l.capture IS NULL OR (l.status='awaiting_official' AND l.checked<?)
+          ORDER BY (l.capture IS NOT NULL),c.seq,c.rowid LIMIT 3""",(int(time.time())-600,))
+        cols=[d[0] for d in pending.description];rows=[dict(zip(cols,r)) for r in pending.fetchall()]
+        if not rows: return {'processed':0,'core':call('check')['scope']}
+        cfg=json.loads((CONF/'notice-scope.json').read_bytes())
+        with sqlite3.connect(LEDGER.as_uri()+'?mode=ro',uri=True) as ledger:
+            outbound=[(mid,cap.digest(jid),at) for mid,jid,at in ledger.execute("SELECT native,destination,attempted FROM dispatch_attempts WHERE state='accepted' AND native IS NOT NULL")]
+        outcomes={}
+        for row in rows:
+            event=make_event(row,read,cfg,outbound)
+            notices=[r[2] for r in outbound if r[0] in event['delivered']]
+            if notices and event['disposition']=='possible_confirmation':
+                event['intervened']=agent_intervened(queue,read,cfg,event,min(notices))
+            result=call('consume',event)
+            status=result['status'];outcomes[status]=outcomes.get(status,0)+1
+            db.execute('INSERT OR REPLACE INTO core_links VALUES(?,?,?,?,?)',(row['rowid'],status,result['members'],int(time.time()),execution))
+    return {'processed':len(rows),'outcomes':outcomes}

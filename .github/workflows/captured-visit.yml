@@ -1,0 +1,17 @@
+name: Captura de respostas da agenda JP
+on:
+  push:
+    branches: ['codex/jp-associacao-respostas-dell']
+permissions:
+  contents: read
+jobs:
+  verify:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+      - run: |
+          python3 -m compileall -q core_ops core_sync
+          python3 core_ops/test_reply_capture.py
+          python3 core_sync/test_selected_agenda.py
+          python3 core_sync/test_source.py
+          node core_ops/test_captured_visit.mjs
