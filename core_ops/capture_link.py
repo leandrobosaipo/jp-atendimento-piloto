@@ -57,8 +57,11 @@ def make_event(row, read, cfg, outbound):
             at=dt.datetime.fromtimestamp(stamp,dt.timezone.utc);trusted=True
     known=[e for e in outbound if e[1]==pn and e[2]<=at.timestamp()+1]
     verified={e[0] for e in known if e[0] in cfg['delivered']}
+    last=max((e[2] for e in known),default=None)
+    newest=[e[0] for e in known if e[2]==last]
+    latest=newest[0] if len(newest)==1 and newest[0] in verified else None
     return dict(mid=row['message_id'],record=row['record_id'],content=row['content_sha256'],capture_sequence=row['seq'],
-        pn=pn,at=at.isoformat(),providerTime=trusted,kind=kind,disposition=disposition,
+        pn=pn,at=at.isoformat(),providerTime=trusted,kind=kind,disposition=disposition,latestDelivered=latest,
         text=(content[:1500] if kind in ('text','emoji_text','reaction') else ''),quote=quote,
         delivered=sorted(verified),humanNotices=[m for m in verified if m in cfg.get('humanNotices',[])],intervened=False,conflict=row['disposition']=='changed_review')
 

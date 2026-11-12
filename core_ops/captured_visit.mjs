@@ -1,6 +1,7 @@
 import http from 'node:http';
 import fs from 'node:fs';
 import {createHash, timingSafeEqual} from 'node:crypto';
+import {confirmedVisitReturn} from './confirmed_visit_return.mjs';
 
 const digest = value => createHash('sha256').update(value).digest('hex');
 const hashPattern = /^[a-f0-9]{64}$/;
@@ -42,6 +43,11 @@ export async function consumeVisit(event, h, preview=false) {
   let state=h.load();
   let receipt=state.dell_reply_links?.[key];
   const retry=receipt?.status==='awaiting_official';
+  if(!preview && event.latestDelivered){
+    const followup=await confirmedVisitReturn(event,h);
+    if(followup)return followup;
+    state=h.load();receipt=state.dell_reply_links?.[key];
+  }
   if (receipt && !retry) return {status:receipt.status,members:receipt.appointments.length,duplicate:true};
   let target=matchVisit(event,state,h);
   const appointments=(target.members||[]).map(c=>c.appointment_id);

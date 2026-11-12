@@ -21,3 +21,4 @@ jobs:
           node --test core_ops/test_reschedule_policy_wake.mjs core_ops/test_captured_reschedule_executor.mjs core_ops/test_reply_reschedule_feedback_executor.mjs core_ops/test_reschedule_full_chain.mjs
           python3 -B -m unittest discover -s core_ops -p 'test_*reschedule*.py'
           python3 core_ops/test_capture_link_schema.py
+          node core_ops/test_confirmed_visit_return.mjs
