@@ -94,7 +94,9 @@ def install(args):
         old[name] = actual
     default = (SOURCE / "default_operator_instructions.json").read_bytes()
     config_before = safe(CONFIG, missing=True)
-    demand(config_before is None, "Editor configuration already exists; reconcile instead")
+    if config_before is not None:
+        from gateway import validate_operator_instructions
+        validate_operator_instructions(json.loads(config_before))
     target = receipts / ("editor-install-" + args.source_commit[:12] + "-" + str(time.time_ns()))
     demand(not target.exists(), "Existing editor install receipt")
     if not args.apply:
@@ -112,7 +114,8 @@ def install(args):
         for name, path in FILES.items():
             if old[name] != new[name]:
                 put(path, new[name], 0o755 if name in ("gateway.py", "knowledge_editor.py") else 0o644)
-        put(CONFIG, default, 0o600)
+        if config_before is None:
+            put(CONFIG, default, 0o600)
         run("systemctl", "daemon-reload")
         run("systemctl", "restart", "atendimento-piloto-ai.service")
         after = info()
@@ -130,7 +133,10 @@ def install(args):
                 path.unlink(missing_ok=True)
             else:
                 put(path, old[name], 0o755 if name in ("gateway.py", "knowledge_editor.py") else 0o644)
-        CONFIG.unlink(missing_ok=True)
+        if config_before is None:
+            CONFIG.unlink(missing_ok=True)
+        else:
+            put(CONFIG, config_before, 0o600)
         run("systemctl", "daemon-reload")
         run("systemctl", "restart", "atendimento-piloto-ai.service")
         (target / "rollback.json").write_text(json.dumps({"status": "restored"}))
