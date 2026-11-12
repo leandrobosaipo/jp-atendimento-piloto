@@ -32,9 +32,11 @@ const key=crypto.createHash('sha256').update(JSON.stringify([q.mid,q.fp])).diges
 const link=state.dell_reply_links?.[key];
 const result={visits:[],received:''};
 if(link?.key===key && link.mid===q.mid){
- const candidates=[...(state.candidates||[]),...(state.initial_confirmations||[])];
+ const document=JSON.parse(fs.readFileSync(process.env.JP_APPROVAL_CANDIDATES_FILE||'/state/candidates.json'));
+ const candidates=document.candidates||[];
  for(const id of link.appointments||[]){
-   const v=candidates.find(c=>String(c.appointment_id)===String(id));
+   const matches=candidates.filter(c=>String(c.appointment_id)===String(id));
+   const v=matches.length===1 && matches[0];
    if(v) result.visits.push({name:v.name||v.first_name,date:v.appointment_date,time:v.appointment_time,service:v.service});
  }
  const messages=(state.messages||[]).filter(m=>m.instance===cfg.instance && m.source==='dell_capture' &&
