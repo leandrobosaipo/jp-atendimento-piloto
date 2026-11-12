@@ -16,6 +16,7 @@ test('moves only a clear same-day request with same Alysson/Pedro, service and d
 });
 test('accepts the professional already bound by an unambiguous visit notice', () => {
   assert.equal(decide('Combinamos às 15:30.').action, 'move');
+  assert.equal(decide('Combinamos às 11h.',{availability:official([{...slot,time:'11:00'}])}).action, 'move');
 });
 
 for (const [name, message, change, reason] of [

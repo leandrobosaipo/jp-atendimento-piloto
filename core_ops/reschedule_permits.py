@@ -23,13 +23,19 @@ def issue(root, conf, proposal, *, latest_is_source):
     own=json.loads((root/'ops-state/ownership.json').read_bytes()); now=dt.datetime.now(dt.timezone.utc); until=dt.datetime.fromisoformat(own['until'])
     if own.get('mode')!='owned' or 'reply' not in own.get('roles',[]) or until<=now: return None
     role=json.loads((root/'ops-config/manifest.json').read_bytes())['reply']; node,=[n for n,p in role['nodes'].items() if p=='/api/n8n/stages/reply-execute']
-    body={'dataAlteraAgendamento':slot['date'].split('-')[::-1].join('/'),'horaAlteraAgendamento':slot['time'],'tipoAlteraAgendamento':'4','codItem':before['item_code'],'profissionalAlteraAgendamento':slot['professional_code']}
+    body={'dataAlteraAgendamento':'/'.join(slot['date'].split('-')[::-1]),'horaAlteraAgendamento':slot['time'],'tipoAlteraAgendamento':'4','codItem':before['item_code'],'profissionalAlteraAgendamento':slot['professional_code']}
     grant={'schema':1,'role':'reply','workflow':role['workflow'],'node':node,'task':proposal['task_id'],'source':proposal['source'],'client':proposal['client'],'phone':proposal['phone'],'operation':'move','reference':proposal['appointment_id'],'epoch':own['epoch'],'approved_by':'JP captured affirmative same-day reschedule','authorization':True,'target':'official','approved_at':now.isoformat(),'until':min(now+dt.timedelta(minutes=4),until).isoformat(),'payload_sha256':digest(body),'capture_sequence':proposal['capture_sequence'],'message_id':proposal['message_id'],'fingerprint':proposal['fingerprint']}
     key=digest(['reply',grant['task'],grant['source'],'move',grant['reference']]); path=root/'ops-config/grants'/(key+'.json')
     if path.exists(): return json.loads(path.read_bytes())
+    path.parent.mkdir(mode=0o750,parents=True,exist_ok=True)
+    # Keep the grant readable by the existing reply service group even where
+    # the filesystem has not inherited setgid.  Never make it world-readable.
     fd,tmp=tempfile.mkstemp(dir=path.parent)
     try:
-      with os.fdopen(fd,'w') as out: os.fchmod(out.fileno(),0o640);json.dump(grant,out);out.flush();os.fsync(out.fileno())
+      with os.fdopen(fd,'w') as out:
+        os.fchmod(out.fileno(),0o640)
+        os.fchown(out.fileno(),-1,path.parent.stat().st_gid)
+        json.dump(grant,out);out.flush();os.fsync(out.fileno())
       os.replace(tmp,path)
     finally: Path(tmp).unlink(missing_ok=True)
     return grant

@@ -35,6 +35,7 @@ export function pendingCapturedWork(h,cutoff){
        && !(state.jp_reply_attempts||[]).some(a=>a.source_message_id===permit.inbound_message_id && a.kind==='send')
        && !out.some(r=>r.link_key===link.key && r.state!=='queued'))return true;
   }
+  if(Object.values(state.dell_reply_links||{}).some(link=>link.reschedule?.state==='grant_required'))return true;
   return Object.values(state.dell_reply_links||{}).some(link=>{
     if(!(Date.parse(link.at)>=Date.parse(cutoff)))return false;
     if(link.status==='official_confirmed'){

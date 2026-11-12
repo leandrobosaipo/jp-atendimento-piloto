@@ -102,6 +102,30 @@ def notify_triage():
     except (OSError,ValueError,KeyError,http.client.HTTPException):
         return {'ready':True,'pending':True}
 
+def issue_ready_reschedules(db, read, cfg, outbound):
+    """Poll persisted human-review captures; never depend on the consume tick.
+
+    The core returns a proposal only after its official reads.  A later capture
+    or team event makes the issuer reject it, so this is safe to repeat.
+    """
+    issued=0
+    rows=db.execute("""SELECT c.rowid,c.* FROM captured c JOIN core_links l ON l.capture=c.rowid
+      WHERE l.status='human_review' ORDER BY c.seq LIMIT 16""").fetchall()
+    cols=[d[0] for d in db.execute("SELECT c.rowid,c.* FROM captured c JOIN core_links l ON l.capture=c.rowid WHERE 0").description]
+    for values in rows:
+        row=dict(zip(cols,values));event=make_event(row,read,cfg,outbound)
+        prepared=call('reschedule-proposal',{})
+        proposal=prepared.get('proposal')
+        if not proposal or proposal.get('message_id')!=row['message_id']:continue
+        from reschedule_permits import issue as issue_reschedule
+        def latest_is_source(p):
+            return (int(p.get('capture_sequence',-1))==int(row['seq']) and p.get('message_id')==row['message_id']
+              and p.get('fingerprint')==row['content_sha256']
+              and not db.execute('SELECT 1 FROM captured WHERE seq>? AND pn=? LIMIT 1',(row['seq'],event['pn'])).fetchone()
+              and not db.execute('SELECT 1 FROM team_events WHERE pn=? AND stamp>=?',(event['pn'],dt.datetime.fromisoformat(event['at']).timestamp())).fetchone())
+        if issue_reschedule(ROOT,CONF,proposal,latest_is_source=latest_is_source):issued+=1
+    return issued
+
 def deliver(queue, db, read, execution):
     db.execute('CREATE TABLE IF NOT EXISTS core_links(capture INTEGER PRIMARY KEY,status TEXT, members INTEGER,checked INTEGER,execution TEXT)')
     cfg=json.loads((CONF/'notice-scope.json').read_bytes())
@@ -112,7 +136,7 @@ def deliver(queue, db, read, execution):
           WHERE l.capture IS NULL OR (l.status='awaiting_official' AND l.checked<?)
           ORDER BY (l.capture IS NOT NULL),c.seq,c.rowid LIMIT 3""",(int(time.time())-600,))
         cols=[d[0] for d in pending.description];rows=[dict(zip(cols,r)) for r in pending.fetchall()]
-        if not rows: return {'processed':0,'core':call('check')['scope']}
+        if not rows: call('check')
         with sqlite3.connect(LEDGER.as_uri()+'?mode=ro',uri=True) as ledger:
             valid=ledger.execute("""SELECT native,destination,attempted,state FROM dispatch_attempts WHERE
                 state IN ('accepted','delivered','read') AND native IS NOT NULL AND attempted>=?""",(int(time.time())-9*86400,)).fetchall()
@@ -129,19 +153,7 @@ def deliver(queue, db, read, execution):
             if result.get('confirmRequest'):
                 from confirmation_permits import issue
                 issue(ROOT,CONF,row,event,result['confirmRequest'],db,queue)
-            # The core has already stored a proposal after two official reads.
-            # This independent process is the only grant issuer; it rechecks
-            # the exact capture cursor before placing a four-minute move grant.
-            prepared=call('reschedule-proposal',event) if result.get('status')=='human_review' else {}
-            proposal=prepared.get('proposal')
-            if proposal:
-                from reschedule_permits import issue as issue_reschedule
-                def latest_is_source(p):
-                    return (int(p.get('capture_sequence',-1))==int(row['seq']) and p.get('message_id')==row['message_id']
-                      and p.get('fingerprint')==row['content_sha256']
-                      and not db.execute('SELECT 1 FROM captured WHERE seq>? AND pn=? LIMIT 1',(row['seq'],event['pn'])).fetchone()
-                      and not db.execute('SELECT 1 FROM team_events WHERE pn=? AND stamp>=?',(event['pn'],dt.datetime.fromisoformat(event['at']).timestamp())).fetchone())
-                issue_reschedule(ROOT,CONF,proposal,latest_is_source=latest_is_source)
             status=result['status'];outcomes[status]=outcomes.get(status,0)+1
             db.execute('INSERT OR REPLACE INTO core_links VALUES(?,?,?,?,?)',(row['rowid'],status,result['members'],int(time.time()),execution))
-    return {'processed':len(rows),'outcomes':outcomes}
+        issued=issue_ready_reschedules(db,read,cfg,outbound)
+    return {'processed':len(rows),'outcomes':outcomes,'reschedule_grants':issued}

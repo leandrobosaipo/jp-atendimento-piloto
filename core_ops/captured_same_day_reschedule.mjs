@@ -7,7 +7,7 @@ import {selectAutonomousSameDayMove} from './autonomous_same_day_reschedule.mjs'
 import {readExactMoveSlot} from './task_reads.mjs';
 
 const id = key => [key.slice(0,8),key.slice(8,12),key.slice(12,16),key.slice(16,20),key.slice(20,32)].join('-');
-const targetTime = text => [...String(text||'').normalize('NFD').replace(/\p{Diacritic}/gu,'').toLowerCase().matchAll(/\b(?:as|para|pra)\s*([01]?\d|2[0-3])(?:[:h]([0-5]\d))\b/g)].map(m=>m[1].padStart(2,'0')+':'+m[2]);
+const targetTime = text => [...String(text||'').normalize('NFD').replace(/\p{Diacritic}/gu,'').toLowerCase().matchAll(/\b(?:as|para|pra)\s*([01]?\d|2[0-3])(?::([0-5]\d)|h([0-5]\d)?)?\b/g)].map(m=>m[1].padStart(2,'0')+':'+(m[2]||m[3]||'00'));
 const changedDate = text => /\b(?:amanha|hoje|segunda|terca|quarta|quinta|sexta|sabado|domingo|dia\s*\d{1,2})\b|\b\d{1,2}[/-]\d{1,2}/.test(String(text||'').normalize('NFD').replace(/\p{Diacritic}/gu,'').toLowerCase());
 const named = text => [...new Set([[/\bpedro\b/,'16897547'],[/\balysson\b|\balisson\b/,'17055820']].filter(([r])=>r.test(String(text||'').normalize('NFD').replace(/\p{Diacritic}/gu,'').toLowerCase())).map(([,v])=>v))];
 

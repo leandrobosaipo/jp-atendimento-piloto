@@ -16,8 +16,8 @@ const text = value => String(value ?? '').normalize('NFD').replace(/\p{Diacritic
 const held = reason => ({action: 'human_review', reason});
 
 function requestedTime(message) {
-  const matches = [...text(message).matchAll(/\b(?:as|para|pra)\s*([01]?\d|2[0-3])(?:[:h]([0-5]\d))\b/g)]
-    .map(m => `${m[1].padStart(2, '0')}:${m[2]}`);
+  const matches = [...text(message).matchAll(/\b(?:as|para|pra)\s*([01]?\d|2[0-3])(?::([0-5]\d)|h([0-5]\d)?)?\b/g)]
+    .map(m => `${m[1].padStart(2, '0')}:${m[2]||m[3]||'00'}`);
   return [...new Set(matches)];
 }
 
