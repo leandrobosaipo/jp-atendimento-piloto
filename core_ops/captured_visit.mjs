@@ -125,7 +125,7 @@ export function projectOfficialAcknowledgements(state, cutoff) {
     if(out.some(x=>x.id===id))continue;
     out.push({id,link_key:link.key,appointment_ids:[...link.appointments],destination_e164:destinations[0],
       inbound_message_id:link.mid,kind:(link.kind==='reaction'||link.kind==='emoji_text')?'emoji':'text',
-      text:(link.kind==='reaction'||link.kind==='emoji_text')?'👍':'Confirmado.',state:'queued',created_at:new Date().toISOString()});created++;
+      text:(link.kind==='reaction'||link.kind==='emoji_text')?'👍':'Confirmado.',state:'queued',source_at:link.at,created_at:new Date().toISOString()});created++;
   }
   return {created,queued:out.filter(x=>x.state==='queued').length};
 }
