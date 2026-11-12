@@ -14,6 +14,9 @@ test('moves only a clear same-day request with same Alysson/Pedro, service and d
   assert.equal(result.action, 'move');
   assert.equal(result.slot, slot);
 });
+test('accepts the professional already bound by an unambiguous visit notice', () => {
+  assert.equal(decide('Combinamos às 15:30.').action, 'move');
+});
 
 for (const [name, message, change, reason] of [
   ['two visits', 'Pedro, mudar para 15:30', {visits: [visit, {...visit, appointment_id: '902'}]}, 'individual_visit_unverified'],
@@ -22,6 +25,10 @@ for (const [name, message, change, reason] of [
   ['two times', 'Pedro, 14:00 ou 15:30?', {}, 'target_time_not_clear'],
   ['other professional', 'Alysson, mudar para 15:30', {}, 'professional_changed_or_unclear'],
   ['same time', 'Pedro, mudar para 10:00', {}, 'target_equals_current_time'],
+  ['negative time', 'Não posso às 15:30', {}, 'reschedule_not_affirmative'],
+  ['cancel is not a move', 'Vou cancelar às 15:30', {}, 'reschedule_not_affirmative'],
+  ['availability question', 'Às 15:30 está ocupado?', {}, 'reschedule_not_affirmative'],
+  ['conditional question', 'Confirma se é 15:30?', {}, 'target_time_not_clear'],
   ['service differs', 'Pedro, mudar para 15:30', {availability: official([{...slot, service_code: '9'}])}, 'official_slot_not_unique'],
   ['duration differs', 'Pedro, mudar para 15:30', {availability: official([{...slot, duration_minutes: 30}])}, 'official_slot_not_unique'],
   ['missing availability', 'Pedro, mudar para 15:30', {availability: null}, 'official_availability_missing'],

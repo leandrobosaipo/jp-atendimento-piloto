@@ -33,6 +33,12 @@ function namedProfessional(message) {
 function changesDate(message) {
   return /\b(?:amanha|hoje|segunda|terca|quarta|quinta|sexta|sabado|domingo|dia\s*\d{1,2})\b|\b\d{1,2}[/-]\d{1,2}(?:[/-]\d{2,4})?\b/.test(text(message));
 }
+function affirmativeMove(message) {
+  const value=text(message);
+  const affirmative=/\b(?:pode\s+(?:mudar|trocar|remarcar|reagendar)\s+(?:para|pra)|(?:vamos\s+)?(?:mudar|trocar|remarcar|reagendar)\s+(?:para|pra)|combinamos\s+(?:as|para|pra)|ficou\s+(?:as|para|pra))\b/.test(value);
+  if (!affirmative || /\b(?:nao|cancel|desmarc|talvez|se|seria|poderia|consegue|ocupad|disponivel|acho)\b/.test(value)) return false;
+  return true;
+}
 
 function validVisit(visit) {
   return visit && typeof visit === 'object' && /^\d+$/.test(String(visit.appointment_id)) &&
@@ -52,8 +58,11 @@ export function selectAutonomousSameDayMove({message, visits, availability, now 
   if (changesDate(message)) return held('date_change_requires_human');
   const requested = requestedTime(message);
   if (requested.length !== 1) return held('target_time_not_clear');
+  if (!affirmativeMove(message)) return held('reschedule_not_affirmative');
   const professional = namedProfessional(message);
-  if (professional.length !== 1 || professional[0] !== String(visit.professional_code)) return held('professional_changed_or_unclear');
+  // The linked individual visit already supplies the professional. Naming the
+  // same person is accepted; naming another or two people is triaged.
+  if (professional.length > 1 || professional.length === 1 && professional[0] !== String(visit.professional_code)) return held('professional_changed_or_unclear');
   const target = requested[0];
   if (target === visit.appointment_time) return held('target_equals_current_time');
   if (Date.parse(`${visit.appointment_date_iso}T${target}:00-04:00`) <= now) return held('target_not_future');

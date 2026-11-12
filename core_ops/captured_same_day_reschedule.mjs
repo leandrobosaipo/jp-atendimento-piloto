@@ -22,10 +22,14 @@ export async function prepareCapturedSameDayReschedule(h, {fetchImpl=fetch}={}) 
     if(target.status!=='matched'||members.length!==1)reason='individual_visit_unverified';
     else if(changedDate(event.text))reason='date_change_requires_human';
     else if(times.length!==1)reason='target_time_not_clear';
-    else if(people.length!==1||people[0]!==String(members[0].professional_code))reason='professional_changed_or_unclear';
+    else if(people.length>1||people.length===1&&people[0]!==String(members[0].professional_code))reason='professional_changed_or_unclear';
     if(reason){link.reschedule={state:'human_review',reason,at:new Date().toISOString()};state.version=(state.version||0)+1;h.save(state);return {status:'human_review',reason};}
     const visit=members[0], task={task_id:id(link.key),source_sha256:link.key,source_message_id:event.mid,client_code:visit.client_code,destination_e164:visit.destination_e164,status:'planned'};
     try{
+      state.jp_reply_tasks||=[];
+      const existing=state.jp_reply_tasks.filter(row=>row.task_id===task.task_id);
+      if(existing.length>1||existing.length===1&&['human','delivery_unknown','sending'].includes(existing[0].status))throw Error('captured_task_conflict');
+      if(!existing.length){state.jp_reply_tasks.push({...task,kind:'reschedule',source_at:event.at,source_text:event.text,context:{appointments:[visit]},created_at:new Date().toISOString()});state.version=(state.version||0)+1;h.save(state);}
       const slot=await readExactMoveSlot(task,h.load,visit,times[0],fetchImpl);
       const decision=selectAutonomousSameDayMove({message:event.text,visits:[{...visit,duration_minutes:slot.duration_minutes}],availability:{source:'official_task_reader',appointment_id:visit.appointment_id,date:visit.appointment_date_iso,professional_code:visit.professional_code,service_code:visit.service_code,read_at:new Date().toISOString(),slots:[slot]}});
       if(decision.action!=='move')reason=decision.reason;
