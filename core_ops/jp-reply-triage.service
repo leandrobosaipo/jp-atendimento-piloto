@@ -11,4 +11,5 @@ PrivateTmp=yes
 ProtectSystem=strict
 ProtectHome=yes
 RestrictAddressFamilies=AF_UNIX
+ReadWritePaths=/var/lib/jp-reply-capture /run/docker.sock
 CapabilityBoundingSet=CAP_DAC_READ_SEARCH
