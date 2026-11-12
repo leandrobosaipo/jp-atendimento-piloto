@@ -12,11 +12,12 @@ class ReplyTriageTests(unittest.TestCase):
         self.tmp = tempfile.TemporaryDirectory()
         self.db = reply_capture.connect(Path(self.tmp.name) / "replies.sqlite3")
         self.db.row_factory = sqlite3.Row
+        self.db.execute("CREATE TABLE core_links(capture INTEGER PRIMARY KEY,status TEXT,members INTEGER,checked INTEGER,execution TEXT)")
+        triage.setup(self.db)
         self.db.execute("INSERT INTO captured VALUES(?,?,?,?,?,?,?,?,?,?,?,?)", (
             "jp-protese-atendimento", "message-1", 1, "record", 0, 0, "emoji_text",
             "possible_confirmation", "", '["' + "a" * 64 + '"]', "content", "2026-11-12T12:00:00Z",
         ))
-        self.db.execute("CREATE TABLE core_links(capture INTEGER PRIMARY KEY,status TEXT,members INTEGER,checked INTEGER,execution TEXT)")
         self.db.execute("INSERT INTO core_links VALUES(1,'human_review',0,0,'1')")
         self.db.commit()
         self.calls = []

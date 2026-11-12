@@ -72,19 +72,27 @@ def setup(db: sqlite3.Connection) -> None:
           claimed_at INTEGER NOT NULL, conversation INTEGER, note INTEGER, result TEXT
         )"""
     )
+    db.execute("CREATE TABLE IF NOT EXISTS triage_watermark(slot INTEGER PRIMARY KEY, capture INTEGER NOT NULL)")
+    db.execute(
+        "INSERT OR IGNORE INTO triage_watermark(slot,capture) SELECT 1,COALESCE(MAX(capture),0) FROM core_links"
+    )
+    db.commit()
 
 
 def _claim(db: sqlite3.Connection, now: int) -> Case | None:
     db.execute("BEGIN IMMEDIATE")
     try:
         db.execute("DELETE FROM triage_cases WHERE state='claiming' AND claimed_at<?", (now - STALE_CLAIM_SECONDS,))
+        watermark, = db.execute("SELECT capture FROM triage_watermark WHERE slot=1").fetchone()
         row = db.execute(
             """SELECT c.rowid AS capture,c.message_id,c.address_hashes,c.kind,c.disposition,c.received_at,l.status
                  FROM captured c JOIN core_links l ON l.capture=c.rowid
                  LEFT JOIN triage_cases t ON t.capture=c.rowid
                  WHERE l.status IN ('identity_review','visit_review','human_review','human_hold','captured')
                    AND t.capture IS NULL
+                   AND c.rowid>?
                  ORDER BY c.seq,c.rowid LIMIT 1"""
+            , (watermark,)
         ).fetchone()
         if row is None:
             db.commit()
