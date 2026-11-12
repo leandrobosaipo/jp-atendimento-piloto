@@ -1,0 +1,14 @@
+[Unit]
+Description=Create private Chatwoot review cases from captured JP replies
+After=docker.service jp-reply-capture.socket
+Requires=jp-reply-capture.socket
+
+[Service]
+ExecStart=/usr/bin/python3 -B /opt/jp-reply-triage/reply_triage_http.py
+UMask=0077
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=yes
+RestrictAddressFamilies=AF_UNIX
+CapabilityBoundingSet=CAP_DAC_READ_SEARCH

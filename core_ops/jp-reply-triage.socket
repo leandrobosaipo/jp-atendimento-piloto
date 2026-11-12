@@ -1,0 +1,12 @@
+[Unit]
+Description=Root-only private JP reply triage socket
+
+[Socket]
+ListenStream=/run/jp-reply-triage.sock
+SocketMode=0600
+SocketUser=root
+SocketGroup=root
+RemoveOnStop=true
+
+[Install]
+WantedBy=sockets.target
