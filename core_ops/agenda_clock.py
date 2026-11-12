@@ -49,3 +49,17 @@ def agenda_profile(graph, manifest):
     role = deepcopy(manifest)
     role.update(nodes={k: v for k, v in role["nodes"].items() if k in keep_ids}, forced=[])
     return profile, role
+
+
+def planning_profile(source, manifest):
+    """Select both native planning stages from the audited clock and retain its timer."""
+    graph, role = agenda_profile(source, manifest)
+    timer = graph["nodes"][0]
+    by_route = {role["nodes"][node["id"]]: node for node in graph["nodes"][1:]}
+    initial, reminders = [by_route["/api/n8n/stages/" + name] for name in ("plan-initial", "plan-reminders")]
+    chain = [timer, initial, reminders]
+    graph["nodes"] = chain
+    graph["connections"] = {a["name"]: {"main": [[{"node": b["name"], "type": "main", "index": 0}]]}
+                            for a, b in zip(chain, chain[1:])}
+    role["nodes"] = {node["id"]: role["nodes"][node["id"]] for node in chain[1:]}
+    return graph, role
