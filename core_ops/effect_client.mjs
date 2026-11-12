@@ -32,6 +32,10 @@ export function wrapEngine(engine,load){
     return current.run({request,task:row.task_id,load},()=>withTask(row,load,()=>original(input)));
   }};
 }
+export function withReplyEffect(task,load,fn){
+  const request=admitted('reply',['reply-execute']);
+  return current.run({request,task:task.task_id,load},()=>withTask(task,load,fn));
+}
 export function registrationPreflight(runtime,load,config){
   const original=runtime.update;
   return {...runtime,update(input){

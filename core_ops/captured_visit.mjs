@@ -82,6 +82,7 @@ export async function consumeVisit(event, h, preview=false) {
     ids:appointments,notice,at:event.at} : null;
   if (receipt && receipt.status===status) return {status,members:appointments.length,confirmRequest};
   seen[key]={key,status,mid:event.mid,at:event.at,kind:event.kind,record:event.record,notice:notice||null,appointments,checkedAt:new Date().toISOString()};
+  if(status==='human_review')seen[key].sourceEvent=event;
   if(grantable)seen[key].confirmationEvidence={event,snapshots:target.members.map(h.snapshot)};
   if(status==='official_confirmed')seen[key].ackCandidates=target.members.map(c=>({
     kind:'appointment_confirmation',appointment_id:c.appointment_id,client_code:c.client_code,

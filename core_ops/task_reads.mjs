@@ -69,3 +69,25 @@ export function scopedFetch(prior){
     });
   };
 }
+
+/** Read one exact same-day slot through the existing signed task reader. */
+export async function readExactMoveSlot(task, load, visit, time, fetchImpl=fetch){
+  if(!visit||!/^\d+$/.test(String(visit.service_code||''))||!/^(16897547|17055820)$/.test(String(visit.professional_code||''))||
+     !/^\d{4}-\d{2}-\d{2}$/.test(String(visit.appointment_date_iso||''))||!/^([01]\d|2[0-3]):[0-5]\d$/.test(time||''))throw Error('move_slot_scope_denied');
+  return withTask(task,load,async()=>{
+    const bound=scopedFetch(fetchImpl), post=async(path,params)=>{
+      const r=await bound('https://sistema.appbarber.com.br'+path,{method:'POST',redirect:'manual',body:new URLSearchParams(params).toString()});
+      if(r.status!==200)throw Error('move_slot_read_held');return r.json();
+    };
+    const catalog=await post('/pages/actions/buscaServicos.php',{profissional:String(visit.professional_code),tipo:'9'});
+    const services=(catalog.servicos||[]).filter(row=>String(row.Ser_Codigo)===String(visit.service_code)&&String(row.TipoItem)==='1');
+    if(services.length!==1||!Number.isInteger(Number(services[0].Ser_Intervalo_Padrao))||Number(services[0].Ser_Intervalo_Padrao)<=0)throw Error('move_service_unverified');
+    const [year,month,day]=visit.appointment_date_iso.split('-');
+    const raw=await post('/pages/cadastros/buscaHorariosDisponiveisv2.php',{servico:String(visit.service_code),profissional:String(visit.professional_code),dia:String(Number(day)),mes:String(Number(month)),ano:year});
+    const rows=(raw.data||[]).filter(row=>String(row.PesCodigoPrincipal)===String(visit.professional_code));
+    if(rows.length!==1||!Array.isArray(rows[0].horarios)||rows[0].tempo!==undefined&&Number(rows[0].tempo)!==Number(services[0].Ser_Intervalo_Padrao))throw Error('move_slot_read_held');
+    const hit=rows[0].horarios.filter(row=>String(row.DataIni||'').slice(0,5)===time);
+    if(hit.length!==1)throw Error('move_slot_unavailable');
+    return {date:visit.appointment_date_iso,time,professional_code:String(visit.professional_code),service_code:String(visit.service_code),duration_minutes:Number(services[0].Ser_Intervalo_Padrao),service:String(services[0].Ser_Descricao||visit.service||''),professional:visit.professional};
+  });
+}
