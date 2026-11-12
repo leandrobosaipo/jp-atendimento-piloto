@@ -1,5 +1,5 @@
 import unittest,datetime as dt
-from source import AGENDA,HISTORY,check_pending,selected_read
+from source import AGENDA,HISTORY,CALENDAR,check_pending,selected_read,selected_calendar
 
 class Selected(unittest.TestCase):
     def test_exact_identity_date_and_current_status(self):
@@ -16,3 +16,21 @@ class Selected(unittest.TestCase):
         check_pending([row],[m])
         for mutations in ([row,row],[],[{**row,'Age_Confirmado':1}],[{**row,'codCliente':'9'}],[{**row,'start':'2026-11-12T10:00:00'}]):
             with self.assertRaises(ValueError):check_pending(mutations,[m])
+
+    def test_future_calendar_scoped_to_selected_services(self):
+        day=dt.date(2026,11,12)
+        one=dict(id='20',date='2026-11-13',time='13:30',pro='1',service='7',client='3')
+        two={**one,'id':'21','time':'14:00','service':'8'}
+        plan=dict(day=day.isoformat(),members=[one,two,{**one,'id':'25','pro':'2'}])
+        params={'profissional[]':'1','tipo':'1','dia':'13/11/2026'}
+        selected=selected_read(CALENDAR,params,day,plan)
+        self.assertEqual(selected,[one,two])
+        for change in [{'dia':'14/11/2026'},{'profissional[]':'4'},{'tipo':'2'},{'extra':'1'}]:
+            self.assertIsNone(selected_read(CALENDAR,{**params,**change},day,plan))
+        self.assertIsNone(selected_read(CALENDAR,params,day+dt.timedelta(days=1),plan))
+        def row(m):
+            return dict(id=m['id'],start=m['date']+'T'+m['time']+':00',resources=m['pro'],sercodigo=m['service'],codCliente=m['client'],codStatus=1,Age_Confirmado=0)
+        a,b=row(one),row(two)
+        self.assertEqual(selected_calendar([a,{**a,'id':'99'},b],selected),[a,b])
+        for invalid in [[a],[a,b,b],[a,{**b,'Age_Confirmado':1}]]:
+            with self.assertRaises(ValueError):selected_calendar(invalid,selected)

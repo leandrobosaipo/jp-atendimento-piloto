@@ -27,6 +27,8 @@ def selected_read(path, params, today, selection):
         day = dt.date.fromisoformat(row['date'])
         if not today <= day <= today+dt.timedelta(days=7):
             continue
+        if path==CALENDAR and params=={'profissional[]':row['pro'],'tipo':'1','dia':br(day)}:
+            return [m for m in selection['members'] if m['date']==row['date'] and m['pro']==row['pro']]
         if path==AGENDA and params=={'profissional':row['pro'],'servico':row['service'],'cliente':row['client'],
                                       'dataini':br(day),'datafim':br(day),'tipo':'1'}:
             return [r for r in selection['members'] if all(r[k]==row[k] for k in ('date','pro','client','service'))]
@@ -45,6 +47,11 @@ def check_pending(rows, members):
                 or not str(r.get('start','')).replace('T',' ').startswith(m['date']+' '+m['time'])
                 or str(r.get('codStatus'))!='1' or str(r.get('Age_Confirmado'))!='0'):
             raise ValueError('appointment_changed')
+
+def selected_calendar(rows, members):
+    check_pending(rows, members)
+    ids={m['id'] for m in members}
+    return [r for r in rows if str(r.get('id')) in ids]
 
 def allowed(path, params, today, professionals):
     if not isinstance(params, dict) or not all(isinstance(v,str) for v in params.values()):
@@ -98,12 +105,12 @@ class Source(http.server.BaseHTTPRequestHandler):
             if not allowed(path,params,today,professionals):
                 selection=self.server.reader.parent/'agenda-selection'
                 if selection.is_file():members=selected_read(path,params,today,json.loads(selection.read_bytes()))
-                if members is None:raise ValueError()
+                if members is None or path==CALENDAR and params.get('profissional[]') not in professionals:raise ValueError()
             # Exactly one upstream per request. Native jobs own retries and freshness.
             request=urllib.request.Request(ORIGIN+path,data=urllib.parse.urlencode(params).encode(),headers={
                 'Cookie':cfg['cookieHeader'],'Origin':ORIGIN,'Referer':ORIGIN+'/index.php',
                 'Content-Type':'application/x-www-form-urlencoded; charset=UTF-8','X-Requested-With':'XMLHttpRequest'})
-            if members:
+            if members and path==AGENDA:
                 check=urllib.request.Request(ORIGIN+CALENDAR,headers=dict(request.header_items()),data=urllib.parse.urlencode({
                     'profissional[]':params['profissional'],'dia':params['dataini'],'tipo':'1'}).encode())
                 with self.server.opener.open(check,timeout=8) as current:
@@ -115,6 +122,8 @@ class Source(http.server.BaseHTTPRequestHandler):
                 if r.status!=200 or r.geturl()!=ORIGIN+path:raise ValueError()
                 data=r.read(MAX_BYTES+1)
             if len(data)>MAX_BYTES or not isinstance(json.loads(data),(dict,list)):raise ValueError()
+            if members and path==CALENDAR:
+                data=json.dumps(selected_calendar(json.loads(data),members)).encode()
             self.send_response(200);self.send_header('Content-Type','application/json');self.send_header('Content-Length',str(len(data)));self.end_headers();self.wfile.write(data)
         except (ValueError,KeyError,TypeError,OSError):
             self.send_error(503,'official read unavailable')
