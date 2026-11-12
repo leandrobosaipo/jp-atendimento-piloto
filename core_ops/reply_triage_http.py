@@ -12,6 +12,8 @@ import sqlite3
 import struct
 import subprocess
 import sys
+from datetime import datetime
+from zoneinfo import ZoneInfo
 
 import reply_triage
 
@@ -20,16 +22,32 @@ DB = Path("/var/lib/jp-reply-capture/replies.sqlite3")
 TEAM = Path("/etc/atendimento-piloto-customer-ingress/team-service.json")
 
 
-def _context(case: reply_triage.Case) -> list[dict]:
-    """Read only the exact Dell reply-link; emit no destination or original text."""
+def _context(case: reply_triage.Case) -> dict:
+    """Read only a bound reply for the restricted team inbox."""
     program = r'''import fs from 'node:fs';import crypto from 'node:crypto';import {decodeStateEnvelope} from '/legacy/scripts/jp-state-envelope.mjs';
-const q=JSON.parse(fs.readFileSync(0));const c=JSON.parse(fs.readFileSync('/config/runtime.json'));const s=JSON.parse(decodeStateEnvelope(JSON.parse(fs.readFileSync('/state/state.json')),Buffer.from(c.stateKey,'hex')));const k=crypto.createHash('sha256').update(JSON.stringify([q.mid,q.fp])).digest('hex');const l=(s.dell_reply_links||{})[k];if(!l){console.log('[]');process.exit(0)};const all=[...(s.candidates||[]),...(s.initial_confirmations||[])];const out=[];for(const id of l.appointments||[]){const x=all.find(v=>String(v.appointment_id)===String(id));out.push(x?{name:x.name||x.first_name||null,date:x.appointment_date||x.date||null,time:x.appointment_time||x.time||null,service:x.service||x.service_code||null}:{name:null,date:null,time:null,service:null})}console.log(JSON.stringify(out));'''
+const q=JSON.parse(fs.readFileSync(0));
+const cfg=JSON.parse(fs.readFileSync('/config/runtime.json'));
+const state=JSON.parse(decodeStateEnvelope(JSON.parse(fs.readFileSync('/state/state.json')),Buffer.from(cfg.stateKey,'hex')));
+const key=crypto.createHash('sha256').update(JSON.stringify([q.mid,q.fp])).digest('hex');
+const link=state.dell_reply_links?.[key];
+const result={visits:[],received:''};
+if(link?.key===key && link.mid===q.mid){
+ const candidates=[...(state.candidates||[]),...(state.initial_confirmations||[])];
+ for(const id of link.appointments||[]){
+   const v=candidates.find(c=>String(c.appointment_id)===String(id));
+   if(v) result.visits.push({name:v.name||v.first_name,date:v.appointment_date,time:v.appointment_time,service:v.service});
+ }
+ const messages=(state.messages||[]).filter(m=>m.instance===cfg.instance && m.source==='dell_capture' &&
+   m.message_id===q.mid && m.direction==='inbound' && link.appointments?.includes(m.appointment_id));
+ if(messages.length===1) result.received=String(messages[0].text||'').slice(0,500);
+}
+console.log(JSON.stringify(result));'''
     value = subprocess.check_output(
         ["docker", "exec", "-i", "jp-core-operacional", "node", "--input-type=module", "-e", program],
         input=json.dumps({"mid": case.message_id, "fp": case.fingerprint}), text=True, timeout=20,
     )
     data = json.loads(value)
-    return data if isinstance(data, list) else []
+    return data
 
 
 def _chatwoot(case: reply_triage.Case) -> tuple[int, int]:
@@ -37,7 +55,10 @@ def _chatwoot(case: reply_triage.Case) -> tuple[int, int]:
     config = json.loads(TEAM.read_bytes())
     if config.get("account") != 2 or config.get("inbox") != 3:
         raise RuntimeError("unexpected_team_inbox")
-    note = reply_triage.render_note(case.status, case.kind, case.disposition, case.marker, _context(case))
+    context = _context(case)
+    when = datetime.fromisoformat(case.received_at.replace("Z", "+00:00")).astimezone(ZoneInfo("America/Cuiaba"))
+    note = reply_triage.render_note(case.status, case.kind, case.disposition, case.marker, context["visits"],
+                                    received=context["received"], when=when.strftime("%d/%m às %H:%M"))
     payload = {
         "account": 2,
         "inbox": 3,
@@ -61,7 +82,7 @@ r=ActiveRecord::Base.transaction do
  ref='jp-reply-triage/'+p.fetch('marker')
  m=v.messages.find_by(source_id:ref)
  if m
-  raise 'note_mismatch' unless m.private? && m.content==p.fetch('note')
+  raise 'note_mismatch' unless m.private? && m.content.include?(p.fetch('marker'))
  else
   m=v.messages.create!(account:a,inbox:i,private:true,message_type: :outgoing,content:p.fetch('note'),source_id:ref)
  end

@@ -52,7 +52,7 @@ def suggested_action(status: str, kind: str, disposition: str) -> str:
     return "Revisar o contexto e a visita antes de responder. Não confirmar, cadastrar ou enviar automaticamente."
 
 
-def render_note(status: str, kind: str, disposition: str, marker: str, context: list[dict] | None = None) -> str:
+def render_note(status: str, kind: str, disposition: str, marker: str, context: list[dict] | None = None, *, received: str = "", when: str = "") -> str:
     if context:
         facts = "; ".join(
             "Nome: {name}. Visita: {date} às {time}. Serviço: {service}.".format(
@@ -64,7 +64,17 @@ def render_note(status: str, kind: str, disposition: str, marker: str, context: 
         )
     else:
         facts = "Identidade ou visita ainda não comprovada; não inferir dados."
-    return "Triagem humana — retorno WhatsApp retido. " + facts + " " + suggested_action(status, kind, disposition) + " Origem e conteúdo original permanecem no registro privado. " + marker
+    quoted = " ".join(received.split())[:500]
+    if kind == "sticker":
+        response = "O cliente enviou uma figurinha."
+    elif quoted:
+        response = "O cliente respondeu «" + quoted + "»."
+    else:
+        response = "O conteúdo original está no registro privado."
+    stamp = "Recebido em " + when + " (Cuiabá). " if when else ""
+    return (stamp + facts + "\n" + response + "\nPróxima ação da equipe: " +
+            suggested_action(status, kind, disposition) +
+            "\nUse Nota privada para registrar sua providência. Ela fica nesta caixa. " + marker)
 
 
 def make_case(row: sqlite3.Row) -> Case:

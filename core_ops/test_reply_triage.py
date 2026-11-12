@@ -56,6 +56,15 @@ class ReplyTriageTests(unittest.TestCase):
             triage.run_tick(self.db, lambda _case: (_ for _ in ()).throw(RuntimeError("offline")), now=1000)
         self.assertEqual(self.db.execute("SELECT count(*) FROM triage_cases").fetchone()[0], 0)
 
+    def test_operator_sees_reply_and_sticker_stays_uninterpreted(self):
+        note = triage.render_note("human_review", "text", "review", "ref", received="Combinamos 11h", when="12/11 às 09:23")
+        self.assertIn("«Combinamos 11h»", note)
+        self.assertIn("09:23 (Cuiabá)", note)
+        self.assertIn("Próxima ação", note)
+        sticker = triage.render_note("human_review", "sticker", "review", "ref", received="👍")
+        self.assertIn("figurinha", sticker)
+        self.assertNotIn("👍", sticker)
+
 
 if __name__ == "__main__":
     unittest.main()
