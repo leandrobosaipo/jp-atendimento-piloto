@@ -12,6 +12,7 @@ jobs:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
       - name: Test offline channel, transaction and recovery boundaries
         run: |
+          sudo unshare --net -- setpriv --reuid="$(id -u)" --regid="$(id -g)" --clear-groups --no-new-privs env -i PATH=/usr/bin:/bin REQUIRE_NETWORK_ISOLATION=1 python3 -B channels/test_evolution.py
           python3 channels/test_bridge.py
           python3 -m unittest business.test_transactions -v
           python3 -m unittest operations.test_retention -v

@@ -8,6 +8,14 @@ A cota SQLite reserva antes da chamada. O limite desta aplicação é US$ 0,05 p
 
 A chave, a base e o histórico ficam fora do Git. O browser recebe a resposta e os títulos das fontes selecionadas. A chamada envia somente a pergunta, contexto curto e trechos selecionados ao destino fixo. O navegador não recebe segredos nem arquivo de base. A pilha anterior permanece em rede interna. As ferramentas nativas de Ubuntu, Cockpit e biblioteca padrão Python evitaram instalar toolchain e um servidor web adicional.
 
+## Editor de regras e orientação no Langflow
+
+O menu autenticado **Regras do Marcelinho** abre `editor.html` dentro do mesmo Cockpit. Ele é a única interface que muda a base curada e as diretrizes adicionais realmente usadas pelo gateway: primeiro lê a revisão, depois valida um rascunho completo e somente publica após confirmação explícita. A publicação cria cópia privada da KB e das diretrizes, troca os dois arquivos de forma atômica e reinicia somente o gateway; não escreve agenda, não aciona n8n, Chatwoot ou Evolution e não restaura o ledger de conversas.
+
+As proteções permanentes não podem ser removidas pelo rascunho: retorno breve e verdadeiro; 👍/✅ ou texto claro só confirmam automaticamente quando o contexto verificado do servidor os vincula a uma única visita pendente; remarcação só é declarada ajustada depois da leitura oficial completa de todos os itens envolvidos. Sem essa prova, a resposta fica em encaminhamento humano.
+
+O fluxo Langflow **Marcelinho JP — regras do atendimento** é apenas uma orientação visual para o editor e o simulador autenticados. Ele não é o motor, não recebe a chave OpenAI nem uma cópia da KB, não envia mensagens e não altera agenda. Essa separação evita duas fontes de regra. O fluxo existente de FAQ sintética também permanece preservado.
+
 Para suspender a função, o operador pode parar o socket e o serviço `atendimento-piloto-ai`, preservando o histórico e os outros serviços. [Modelo e parâmetros oficiais](https://developers.openai.com/api/docs/models/gpt-6-luna).
 
 ## Candidata: orçamento mensal e avisos locais

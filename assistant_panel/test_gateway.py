@@ -68,5 +68,13 @@ class Tests(unittest.TestCase):
         self.sid=uid()
         club=self.g.handle(self.msg("Clube hours?"));self.assertIn("Téo",club["reply"])
         self.assertEqual(club["decision"],"handoff");self.assertIn("confirmadas",club["reply"])
+    def test_operator_guidance_keeps_permanent_schedule_guard(self):
+        self.g.operator_instructions={"version":"fixture-operator","text":"Seja direto."}
+        self.g.handle(self.msg())
+        instructions=self.sent[0]["instructions"]
+        self.assertIn("Seja direto.",instructions)
+        self.assertIn("👍 ou ✅",instructions)
+        self.assertIn("leitura oficial completa",instructions)
+        self.assertIn("Não peça revisão humana nesses casos claros",instructions)
 
 if __name__=="__main__":unittest.main()
