@@ -68,5 +68,12 @@ class Tests(unittest.TestCase):
         self.sid=uid()
         club=self.g.handle(self.msg("Clube hours?"));self.assertIn("Téo",club["reply"])
         self.assertEqual(club["decision"],"handoff");self.assertIn("confirmadas",club["reply"])
+    def test_operator_guidance_keeps_permanent_schedule_guard(self):
+        self.g.operator_instructions={"version":"fixture-operator","text":"Seja direto."}
+        self.g.handle(self.msg())
+        instructions=self.sent[0]["instructions"]
+        self.assertIn("Seja direto.",instructions)
+        self.assertIn("emoji pode ser reconhecido",instructions)
+        self.assertIn("Nunca diga que horário foi atualizado",instructions)
 
 if __name__=="__main__":unittest.main()

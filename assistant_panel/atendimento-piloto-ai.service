@@ -7,6 +7,7 @@ StateDirectory=atendimento-piloto-ai
 StateDirectoryMode=0700
 LoadCredential=provider-key:/etc/atendimento-piloto-ai/openai.key
 LoadCredential=knowledge:/etc/atendimento-piloto-ai/kb.json
+LoadCredential=operator-instructions:/etc/atendimento-piloto-ai/operator-instructions.json
 UMask=0077
 NoNewPrivileges=yes
 ProtectSystem=strict

@@ -1,0 +1,12 @@
+'use strict';
+const assert=require('node:assert/strict');
+const fs=require('node:fs');
+const html=fs.readFileSync(__dirname+'/cockpit/editor.html','utf8');
+const js=fs.readFileSync(__dirname+'/cockpit/editor.js','utf8');
+assert.match(html,/Publicar revisão/);
+assert.match(html,/conversa fictícia/);
+assert.match(js,/superuser:'require'/);
+assert.match(js,/expected_knowledge_sha256/);
+assert.match(js,/window\.confirm/);
+assert.doesNotMatch(js,/shell|bash|systemctl/);
+console.log('editor source verifies authenticated deliberate publication only');

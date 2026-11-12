@@ -19,7 +19,11 @@ jobs:
           node assistant_panel/test_panel.cjs
           python3 assistant_panel/test_update.py
           python3 assistant_panel/test_maintenance.py
+          python3 assistant_panel/test_knowledge_editor.py
           node --check assistant_panel/cockpit/panel.js
+          node assistant_panel/test_editor.cjs
+          node --check assistant_panel/cockpit/editor.js
+          python3 assistant_panel/install_editor.py --help >/dev/null
           python3 -m json.tool assistant_panel/cockpit/manifest.json >/dev/null
       - name: Exercise real systemd credentials and Unix socket with private fixtures
         run: |
