@@ -62,37 +62,69 @@ def make_event(row, read, cfg, outbound):
         text=(content[:1500] if kind in ('text','emoji_text','reaction') else ''),quote=quote,
         delivered=sorted(verified),humanNotices=[m for m in verified if m in cfg.get('humanNotices',[])],intervened=False,conflict=row['disposition']=='changed_review')
 
-def agent_intervened(queue, read, cfg, event, start):
-    # On a new positive only, check the original conversation for a later team message.
-    # The output is cached for pending agenda reads; do not scan on idle ticks.
-    for rid, in queue.execute('SELECT id FROM receipts WHERE seq>=? ORDER BY seq',(cfg['startSeq'],)):
+def index_team_events(queue, db, read, cfg):
+    """Increment the conversation index under the existing timer, including receipts while no customers reply."""
+    db.execute('CREATE TABLE IF NOT EXISTS team_cursor(slot INTEGER PRIMARY KEY,seq INTEGER,record TEXT)')
+    db.execute('CREATE TABLE IF NOT EXISTS team_events(pn TEXT,mid TEXT,stamp REAL,PRIMARY KEY(pn,mid))')
+    db.execute('CREATE INDEX IF NOT EXISTS team_time ON team_events(pn,stamp)')
+    seq,rid=db.execute('SELECT seq,record FROM team_cursor WHERE slot=1').fetchone() or (cfg['startSeq']-1,None)
+    if rid and queue.execute('SELECT id FROM receipts WHERE seq=?',(seq,)).fetchone()!=(rid,):raise ValueError('team_index_source_changed')
+    rows=queue.execute('SELECT seq,id FROM receipts WHERE seq>? ORDER BY seq LIMIT 64',(seq,)).fetchall()
+    for seq,rid in rows:
         meta,envs=read(rid)
-        if dt.datetime.fromisoformat(meta['receivedAt'].replace('Z','+00:00')).timestamp()+1<start:continue
         for env in envs if isinstance(envs,list) else [envs]:
             if env.get('instance')!=cap.INSTANCE or str(env.get('event')).lower().replace('_','.')!='messages.upsert':continue
-            body=env.get('data')
-            for x in body if isinstance(body,list) else [body]:
-                if not isinstance(x,dict) or (x.get('key') or {}).get('fromMe') is not True or identity(x,cfg['pairs'])!=event['pn']:continue
-                if x['key'].get('id') not in event['delivered']:return True
-    return False
+            batch=env.get('data')
+            for msg in batch if isinstance(batch,list) else [batch]:
+                if not isinstance(msg,dict):continue
+                key=msg.get('key') or {}
+                if key.get('fromMe') is not True or not key.get('id'):continue
+                pn=identity(msg,cfg['pairs'])
+                if pn:
+                    stamp=dt.datetime.fromisoformat(meta['receivedAt'].replace('Z','+00:00')).timestamp()
+                    db.execute('INSERT OR IGNORE INTO team_events VALUES (?,?,?)',(pn,key['id'],stamp))
+    if rows:db.execute('INSERT OR REPLACE INTO team_cursor VALUES(1,?,?)',(seq,rid))
+    return not queue.execute('SELECT 1 FROM receipts WHERE seq>? LIMIT 1',(seq,)).fetchone()
+
+
+def notify_triage():
+    endpoint=Path('/run/jp-reply-triage.sock')
+    if not endpoint.is_socket():return {'ready':False}
+    conn=http.client.HTTPConnection('localhost',timeout=8)
+    try:
+        with socket.socket(socket.AF_UNIX) as sock:
+            sock.settimeout(8);sock.connect(str(endpoint));conn.sock=sock
+            conn.request('POST','/tick',body=b'{}',headers={'Content-Type':'application/json'})
+            response=conn.getresponse()
+            if response.status!=200:return {'ready':True,'pending':True}
+            result=json.loads(response.read(2048))
+            return {'ready':True,'processed':int(result['processed'])}
+    except (OSError,ValueError,KeyError,http.client.HTTPException):
+        return {'ready':True,'pending':True}
 
 def deliver(queue, db, read, execution):
     db.execute('CREATE TABLE IF NOT EXISTS core_links(capture INTEGER PRIMARY KEY,status TEXT, members INTEGER,checked INTEGER,execution TEXT)')
+    cfg=json.loads((CONF/'notice-scope.json').read_bytes())
     with db:
+        caught_up=index_team_events(queue,db,read,cfg)
+        if not caught_up:return {'processed':0,'index_catching_up':True}
         pending=db.execute("""SELECT c.rowid,c.* FROM captured c LEFT JOIN core_links l ON c.rowid=l.capture
           WHERE l.capture IS NULL OR (l.status='awaiting_official' AND l.checked<?)
           ORDER BY (l.capture IS NOT NULL),c.seq,c.rowid LIMIT 3""",(int(time.time())-600,))
         cols=[d[0] for d in pending.description];rows=[dict(zip(cols,r)) for r in pending.fetchall()]
         if not rows: return {'processed':0,'core':call('check')['scope']}
-        cfg=json.loads((CONF/'notice-scope.json').read_bytes())
         with sqlite3.connect(LEDGER.as_uri()+'?mode=ro',uri=True) as ledger:
-            outbound=[(mid,cap.digest(jid),at) for mid,jid,at in ledger.execute("SELECT native,destination,attempted FROM dispatch_attempts WHERE state='accepted' AND native IS NOT NULL")]
+            valid=ledger.execute("""SELECT native,destination,attempted,state FROM dispatch_attempts WHERE
+                state IN ('accepted','delivered','read') AND native IS NOT NULL AND attempted>=?""",(int(time.time())-9*86400,)).fetchall()
+            cfg['delivered']=set(cfg['delivered'])|{mid for mid,_,_,status in valid if status in ('delivered','read')}
+            outbound=[(mid,cap.digest(jid),stamp) for mid,jid,stamp,_ in valid]
         outcomes={}
         for row in rows:
             event=make_event(row,read,cfg,outbound)
             notices=[r[2] for r in outbound if r[0] in event['delivered']]
             if notices and event['disposition']=='possible_confirmation':
-                event['intervened']=agent_intervened(queue,read,cfg,event,min(notices))
+                latest=db.execute('SELECT mid FROM team_events WHERE pn=? AND stamp>=?',(event['pn'],min(notices)))
+                event['intervened']=any(mid not in event['delivered'] for mid, in latest)
             result=call('consume',event)
             status=result['status'];outcomes[status]=outcomes.get(status,0)+1
             db.execute('INSERT OR REPLACE INTO core_links VALUES(?,?,?,?,?)',(row['rowid'],status,result['members'],int(time.time()),execution))
