@@ -57,7 +57,7 @@ def make_event(row, read, cfg, outbound):
             at=dt.datetime.fromtimestamp(stamp,dt.timezone.utc);trusted=True
     known=[e for e in outbound if e[1]==pn and e[2]<=at.timestamp()+1]
     verified={e[0] for e in known if e[0] in cfg['delivered']}
-    return dict(mid=row['message_id'],record=row['record_id'],content=row['content_sha256'],
+    return dict(mid=row['message_id'],record=row['record_id'],content=row['content_sha256'],capture_sequence=row['seq'],
         pn=pn,at=at.isoformat(),providerTime=trusted,kind=kind,disposition=disposition,
         text=(content[:1500] if kind in ('text','emoji_text','reaction') else ''),quote=quote,
         delivered=sorted(verified),humanNotices=[m for m in verified if m in cfg.get('humanNotices',[])],intervened=False,conflict=row['disposition']=='changed_review')
@@ -129,6 +129,19 @@ def deliver(queue, db, read, execution):
             if result.get('confirmRequest'):
                 from confirmation_permits import issue
                 issue(ROOT,CONF,row,event,result['confirmRequest'],db,queue)
+            # The core has already stored a proposal after two official reads.
+            # This independent process is the only grant issuer; it rechecks
+            # the exact capture cursor before placing a four-minute move grant.
+            prepared=call('reschedule-proposal',event) if result.get('status')=='human_review' else {}
+            proposal=prepared.get('proposal')
+            if proposal:
+                from reschedule_permits import issue as issue_reschedule
+                def latest_is_source(p):
+                    return (int(p.get('capture_sequence',-1))==int(row['seq']) and p.get('message_id')==row['message_id']
+                      and p.get('fingerprint')==row['content_sha256']
+                      and not db.execute('SELECT 1 FROM captured WHERE seq>? AND pn=? LIMIT 1',(row['seq'],event['pn'])).fetchone()
+                      and not db.execute('SELECT 1 FROM team_events WHERE pn=? AND stamp>=?',(event['pn'],dt.datetime.fromisoformat(event['at']).timestamp())).fetchone())
+                issue_reschedule(ROOT,CONF,proposal,latest_is_source=latest_is_source)
             status=result['status'];outcomes[status]=outcomes.get(status,0)+1
             db.execute('INSERT OR REPLACE INTO core_links VALUES(?,?,?,?,?)',(row['rowid'],status,result['members'],int(time.time()),execution))
     return {'processed':len(rows),'outcomes':outcomes}

@@ -153,7 +153,7 @@ export function serveCapture(h){
   const server=http.createServer(async(req,res)=>{
     const answer=(s,o)=>{res.writeHead(s,{'content-type':'application/json'});res.end(JSON.stringify(o));};
     const auth=Buffer.from(String(req.headers.authorization||'')),expected=Buffer.from('Bearer '+token);
-    if(req.method!=='POST'||!['/consume','/preview','/check','/pending'].includes(req.url)||auth.length!==expected.length||!timingSafeEqual(auth,expected))return answer(403,{error:'denied'});
+    if(req.method!=='POST'||!['/consume','/preview','/check','/pending','/reschedule-proposal'].includes(req.url)||auth.length!==expected.length||!timingSafeEqual(auth,expected))return answer(403,{error:'denied'});
     if(req.url==='/check')return answer(200,{scope:'jp_new_replies'});
     if(busy)return answer(503,{error:'busy'});
     busy=true;
@@ -163,6 +163,10 @@ export function serveCapture(h){
       if(req.url==='/pending'){
         const {pendingCapturedWork}=await import('./captured_confirmation.mjs');
         return answer(200,{actionPending:pendingCapturedWork(h,input.cutoff)});
+      }
+      if(req.url==='/reschedule-proposal'){
+        const {prepareCapturedSameDayReschedule}=await import('./captured_same_day_reschedule.mjs');
+        return answer(200,await prepareCapturedSameDayReschedule(h));
       }
       answer(200,await consumeVisit(input,h,req.url==='/preview'));
     }catch{answer(503,{error:'reply_held'});}finally{busy=false;}

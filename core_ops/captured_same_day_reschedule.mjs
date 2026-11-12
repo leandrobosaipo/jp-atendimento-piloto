@@ -30,10 +30,20 @@ export async function prepareCapturedSameDayReschedule(h, {fetchImpl=fetch}={}) 
       const existing=state.jp_reply_tasks.filter(row=>row.task_id===task.task_id);
       if(existing.length>1||existing.length===1&&['human','delivery_unknown','sending'].includes(existing[0].status))throw Error('captured_task_conflict');
       if(!existing.length){state.jp_reply_tasks.push({...task,kind:'reschedule',source_at:event.at,source_text:event.text,context:{appointments:[visit]},created_at:new Date().toISOString()});state.version=(state.version||0)+1;h.save(state);}
+      const before=await h.read(visit);
+      if(!before||String(before.appointment_id)!==String(visit.appointment_id)||String(before.client_code)!==String(visit.client_code)
+        ||String(before.service_code)!==String(visit.service_code)||String(before.professional_code)!==String(visit.professional_code)
+        ||before.status!=='1'||!before.item_code)throw Error('official_before_unverified');
       const slot=await readExactMoveSlot(task,h.load,visit,times[0],fetchImpl);
       const decision=selectAutonomousSameDayMove({message:event.text,visits:[{...visit,duration_minutes:slot.duration_minutes}],availability:{source:'official_task_reader',appointment_id:visit.appointment_id,date:visit.appointment_date_iso,professional_code:visit.professional_code,service_code:visit.service_code,read_at:new Date().toISOString(),slots:[slot]}});
       if(decision.action!=='move')reason=decision.reason;
-      else {link.reschedule={state:'grant_required',task_id:task.task_id,source:link.key,appointment_id:visit.appointment_id,slot,at:new Date().toISOString()};state.version=(state.version||0)+1;h.save(state);return {status:'grant_required',task_id:task.task_id};}
+      else {
+        const proposal={task_id:task.task_id,source:link.key,appointment_id:visit.appointment_id,client:visit.client_code,phone:visit.destination_e164,
+          before:{date:visit.appointment_date_iso,time:visit.appointment_time,professional_code:visit.professional_code,service_code:visit.service_code,duration_minutes:slot.duration_minutes,item_code:before.item_code},
+          slot,capture_sequence:event.capture_sequence,message_id:event.mid,fingerprint:event.content,source_at:event.at};
+        if(!Number.isInteger(proposal.capture_sequence)||!proposal.fingerprint)throw Error('capture_proof_missing');
+        link.reschedule={state:'grant_required',...proposal,at:new Date().toISOString()};state.version=(state.version||0)+1;h.save(state);return {status:'grant_required',task_id:task.task_id,proposal};
+      }
     }catch{reason='official_availability_unverified';}
     link.reschedule={state:'human_review',reason,at:new Date().toISOString()};state.version=(state.version||0)+1;h.save(state);return {status:'human_review',reason};
   }
