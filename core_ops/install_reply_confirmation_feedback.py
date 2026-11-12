@@ -113,14 +113,15 @@ def gates_ready():
         raise ValueError("reply_dispatch_policy_not_ready")
 
 
-def apply():
+def apply(stage_only=False):
     api = get_api()
     current = api.req("GET", "/rest/workflows/" + WID)["data"]
     if not current.get("active") or not expected_capture_only(current):
         raise ValueError("live_reply_capture_precondition_failed")
     if BACKUP.exists() or RECEIPT.exists():
         raise ValueError("reply_feedback_receipt_already_exists")
-    gates_ready()
+    if not stage_only:
+        gates_ready()
     graph = definition(current)
     write_new(BACKUP, {"version": current["versionId"], "shape": shape(current), "at": time.time()})
     try:
@@ -153,5 +154,7 @@ def apply():
 if __name__ == "__main__":
     if sys.argv[1:] == ["apply"]:
         apply()
+    elif sys.argv[1:] == ["stage"]:
+        apply(stage_only=True)
     else:
-        raise SystemExit("usage: install_reply_confirmation_feedback.py apply")
+        raise SystemExit("usage: install_reply_confirmation_feedback.py apply|stage")

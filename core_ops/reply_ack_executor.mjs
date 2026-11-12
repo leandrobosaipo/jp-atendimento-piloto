@@ -9,7 +9,7 @@ function safeAck(row, cutoff) {
   return row && row.state==='queued' && /^[a-f0-9]{64}$/.test(row.id||'')
     && /^[a-f0-9]{64}$/.test(row.link_key||'') && validPhone(row.destination_e164)
     && Array.isArray(row.appointment_ids) && row.appointment_ids.length
-    && Number.isFinite(Date.parse(row.source_at)) && Date.parse(row.source_at)>=Date.parse(cutoff)
+    && Number.isFinite(Date.parse(row.source_at)) && (typeof row.authorized_exception==='string'||Date.parse(row.source_at)>=Date.parse(cutoff))
     && ((row.kind==='emoji' && row.text==='👍') || (row.kind==='text' && (row.text==='Confirmado.' || typeof row.authorized_exception==='string')));
 }
 
@@ -41,12 +41,16 @@ async function currentEvidence(h,state,row){
   if(!link||!sameIds(link.appointments,row.appointment_ids))return false;
   if(row.authorized_exception){
     const exact=authorized(state).find(item=>item.authorization_id===row.authorized_exception&&item.link_key===row.link_key&&item.text===row.text&&sameIds(item.appointment_ids,row.appointment_ids)&&(item.provider_destination_e164||item.destination_e164)===row.destination_e164);
-    if(!exact||!row.candidate||String(row.candidate.appointment_id)!==String(row.appointment_ids[0]))return false;
+    const blocked=typeof h.blocked==='function'&&h.blocked(state,row.destination_e164);
+    if(!exact||String(exact.private_note)!=='466'||blocked&&link.status!=='human_hold'||!row.candidate||String(row.candidate.appointment_id)!==String(row.appointment_ids[0]))return false;
+    if((state.jp_responses||[]).some(item=>String(item.appointment_id)===String(row.candidate.appointment_id)&&item.intent==='opt_out'))return false;
+    if(Object.values(state.dell_reply_links||{}).some(item=>item.key!==link.key&&item.appointments?.map(String).includes(String(row.candidate.appointment_id))&&Date.parse(item.at)>Date.parse(link.at)))return false;
+    if(!(Date.parse(row.candidate.appointment_date_iso+'T'+row.candidate.appointment_time+':00-04:00')>Date.now()))return false;
     const proof=await h.read(row.candidate);return proof?.confirmed===true&&proof.status==='1'&&String(proof.appointment_id)===String(row.candidate.appointment_id);
   }
   if(link.status!=='official_confirmed')return false;
   const candidates=[];
-  for(const id of row.appointment_ids){const rows=(state.individual_dispatches||[]).filter(item=>String(item.appointment_id)===String(id)&&item.destination_e164===row.destination_e164);if(rows.length!==1)return false;candidates.push(rows[0].conversation_snapshot||rows[0]);}
+  for(const id of row.appointment_ids){const rows=(link.ackCandidates||[]).filter(item=>String(item.appointment_id)===String(id)&&item.destination_e164===row.destination_e164);if(rows.length!==1)return false;candidates.push(rows[0]);}
   const responses=(state.jp_responses||[]).filter(item=>item.message_id===link.mid&&row.appointment_ids.map(String).includes(String(item.appointment_id)));
   if(responses.length!==row.appointment_ids.length||responses.some(item=>item.destination_e164!==row.destination_e164||item.intent==='opt_out'||item.official_update?.status!=='confirmed'))return false;
   if((state.reminders||[]).some(item=>row.appointment_ids.map(String).includes(String(item.appointment_id))&&['paused_customer_request','paused_support'].includes(item.status)))return false;

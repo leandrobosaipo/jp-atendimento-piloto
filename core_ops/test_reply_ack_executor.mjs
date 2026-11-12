@@ -4,7 +4,7 @@ import {executeAcknowledgements} from './reply_ack_executor.mjs';
 const id='a'.repeat(64), link='b'.repeat(64), cutoff='2026-11-12T12:00:00.000Z';
 function fixture(){
   const candidate={appointment_id:'1',destination_e164:'+5565999999999'};
-  const state={version:1,individual_dispatches:[{...candidate,conversation_snapshot:candidate}],dell_reply_links:{[link]:{status:'official_confirmed',appointments:['1'],mid:'inbound-1'}},jp_responses:[{appointment_id:'1',destination_e164:'+5565999999999',message_id:'inbound-1',official_update:{status:'confirmed'}}],jp_reply_ack_outbox:[{id,link_key:link,appointment_ids:['1'],destination_e164:'+5565999999999',inbound_message_id:'inbound-1',kind:'emoji',text:'👍',state:'queued',source_at:'2026-11-12T12:01:00.000Z'}]};
+  const state={version:1,individual_dispatches:[{...candidate,conversation_snapshot:candidate}],dell_reply_links:{[link]:{status:'official_confirmed',appointments:['1'],mid:'inbound-1',ackCandidates:[candidate]}},jp_responses:[{appointment_id:'1',destination_e164:'+5565999999999',message_id:'inbound-1',official_update:{status:'confirmed'}}],jp_reply_ack_outbox:[{id,link_key:link,appointment_ids:['1'],destination_e164:'+5565999999999',inbound_message_id:'inbound-1',kind:'emoji',text:'👍',state:'queued',source_at:'2026-11-12T12:01:00.000Z'}]};
   return {state,h:{instance:'jp-protese-atendimento',load:()=>state,save:()=>{},read:async row=>({appointment_id:row.appointment_id,confirmed:true,status:'1'}) }};
 }
 {
