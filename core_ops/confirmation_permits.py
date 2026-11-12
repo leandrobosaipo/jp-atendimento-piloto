@@ -49,7 +49,9 @@ def issue(root, conf, row, event, request, db, queue):
         grant=dict(schema=1,role='reply',workflow=role['workflow'],node=node,task=task,source=request['key'],
                    client=request['client'],phone=request['phone'],operation='confirm',reference=appointment,
                    epoch=own['epoch'],approved_by='JP standing appointment confirmation',authorization=True,
-                   target='official',approved_at=now.isoformat(),until=expiry.isoformat(),payload_sha256=digest(body))
+                   target='official',approved_at=now.isoformat(),until=expiry.isoformat(),payload_sha256=digest(body),
+                   capture_sequence=row['seq'],message_id=row['message_id'],fingerprint=row['content_sha256'],
+                   person=event['pn'],notice=request['notice'],source_at=event['at'])
         key=digest(['reply',task,request['key'],'confirm',appointment])
         path=root/'ops-config/grants'/(key+'.json')
         if path.exists() and (read(path).get('source')!=request['key'] or read(path).get('approved_by')!=grant['approved_by']):

@@ -1,6 +1,7 @@
 """Single-attempt provider bridge. The default deployment has no official write target."""
 import datetime as dt
 import hashlib,json,os,re,socket,struct,time,urllib.parse,urllib.request
+import sqlite3
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
@@ -13,6 +14,25 @@ def need(x):
 def read(p):return json.loads(p.read_bytes())
 def digest(v):return hashlib.sha256(json.dumps(v,ensure_ascii=False,sort_keys=True,separators=(',',':')).encode()).hexdigest()
 def domain(s):return digest([s[k] for k in ('role','task','source','operation','reference')])
+def standing_current(g):
+    """Verify the receiver caught up and the answer is still the latest for this contact."""
+    policy=secure(Path('/etc/jp-reply-capture/automatic-confirmations.json'))
+    need(policy['enabled'] is True and g['operation']=='confirm' and g['capture_sequence']>policy['afterSequence']
+         and unix(g['source_at'])>=unix(policy['afterUtc']) and g['source']==digest([g['message_id'],g['fingerprint']]))
+    person=hashlib.sha256((g['phone'][1:]+'@s.whatsapp.net').encode()).hexdigest()
+    need(person==g['person'])
+    src=ROOT.parent/'entrada-operacional/data/index/receive.sqlite3'
+    with sqlite3.connect(src.as_uri()+'?mode=ro',uri=True) as queue,sqlite3.connect('file:/var/lib/jp-reply-capture/replies.sqlite3?mode=ro',uri=True) as db:
+        high=queue.execute('SELECT max(seq) FROM receipts').fetchone()[0]
+        need(db.execute('SELECT seq FROM cursor WHERE slot=1').fetchone()==(high,) and db.execute('SELECT seq FROM team_cursor WHERE slot=1').fetchone()==(high,))
+        rows=db.execute('SELECT rowid,seq,content_sha256,address_hashes,disposition FROM captured WHERE message_id=?',(g['message_id'],)).fetchall()
+        need(len(rows)==1)
+        rid,seq,fp,aliases,disposition=rows[0]
+        need(seq==g['capture_sequence'] and fp==g['fingerprint'] and disposition=='possible_confirmation')
+        need(db.execute('SELECT status FROM core_links WHERE capture=?',(rid,)).fetchone()==('awaiting_official',))
+        aliases=set(json.loads(aliases))
+        need(not any(aliases.intersection(json.loads(raw)) for raw, in db.execute('SELECT address_hashes FROM captured WHERE seq>? OR (seq=? AND rowid>?)',(seq,seq,rid))))
+        need(not db.execute('SELECT 1 FROM team_events WHERE pn=? AND stamp>=? AND mid<>? LIMIT 1',(person,unix(g['source_at']),g['notice'])).fetchone())
 def unix(t):return dt.datetime.fromisoformat(t.replace('Z','+00:00')).timestamp()
 def lockfile(f,obj):
     fd=os.open(f,os.O_CREAT|os.O_EXCL|os.O_WRONLY,0o600)
@@ -126,6 +146,7 @@ def execute(root,audit,cfg,msg,upstream=provider):
     need(grant(root,s,action)[1]==g)
     if upstream is provider:
         latest=secure(CF/'mode.json');need(latest.get('mode')=='official' and latest.get('allowed',{}).get(op) is True)
+        if g.get('approved_by')=='JP standing appointment confirmation':standing_current(g)
         fresh=secure(Path('/etc/atendimento-piloto-integracao/appbarber-readonly.json'))
         need(fresh['source_generation']==cfg['source_generation']==secure(root/'ops-config/effect-generation.json')['generation'])
     result=upstream({**cfg,'contact_task':key} if op=='contact' else cfg,'confirm' if op=='confirm_created' else op,b)

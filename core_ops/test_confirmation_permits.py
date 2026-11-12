@@ -32,7 +32,7 @@ class ConfirmationPolicy(unittest.TestCase):
             db.executescript("CREATE TABLE cursor(slot,seq);INSERT INTO cursor VALUES(1,10);CREATE TABLE receipts(seq);INSERT INTO receipts VALUES(10);CREATE TABLE captured(seq,message_id,content_sha256,address_hashes);INSERT INTO captured VALUES(10,'m','hash','[\"person\"]');")
             row=dict(rowid=1,seq=10,message_id='m',content_sha256='hash',address_hashes='["person"]')
             event=dict(at=now.isoformat(),disposition='possible_confirmation',providerTime=True,intervened=False,conflict=False,
-                       mid='m',content='hash',delivered=['notice'],humanNotices=[])
+                       mid='m',content='hash',pn='person',delivered=['notice'],humanNotices=[])
             req=dict(notice='notice',phone='+5511999999999',client='33',key=digest(['m','hash']),ids=['34','35'])
             with patch('os.fchown'):
                 issue(root,root/'conf',row,{**event,'intervened':True},req,db,db)
