@@ -21,6 +21,26 @@ function revalidate(h,link){
   return target;
 }
 
+export function pendingCapturedWork(h,cutoff){
+  if(!Number.isFinite(Date.parse(cutoff)))return false;
+  const state=h.load(),out=state.jp_reply_ack_outbox||[];
+  return Object.values(state.dell_reply_links||{}).some(link=>{
+    if(!(Date.parse(link.at)>=Date.parse(cutoff)))return false;
+    if(link.status==='official_confirmed'){
+      const attempts=out.filter(x=>x.link_key===link.key);
+      return !attempts.length || attempts.some(x=>x.state==='queued');
+    }
+    if(link.status!=='awaiting_official'||!link.confirmationEvidence)return false;
+    const target=revalidate(h,link);
+    if(!target)return false;
+    return scopes(link,target,{role:'reply'}).every(scope=>{
+      const file='/ops-config/grants/'+keyOf(scope)+'.json';
+      try{return Date.parse(JSON.parse(fs.readFileSync(file)).until)>Date.now() && !fs.existsSync('/ops-state/admissions/effects/'+keyOf(scope)+'.intent');}
+      catch{return false;}
+    });
+  });
+}
+
 export async function reconcileOne(link,h,authority){
   let target=revalidate(h,link);
   if(!target)return {status:'held'};
