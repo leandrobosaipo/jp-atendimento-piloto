@@ -1,0 +1,15 @@
+[Unit]
+Description=Capture new JP replies from the Dell receiver
+
+[Service]
+ExecStart=/usr/bin/python3 -B /opt/jp-reply-capture/reply_capture_http.py
+LoadCredential=token:/etc/jp-reply-capture/token
+StateDirectory=jp-reply-capture
+StateDirectoryMode=0700
+UMask=0077
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=yes
+RestrictAddressFamilies=AF_UNIX
+CapabilityBoundingSet=CAP_DAC_READ_SEARCH
