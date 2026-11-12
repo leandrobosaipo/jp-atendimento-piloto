@@ -73,7 +73,8 @@ class Tests(unittest.TestCase):
         self.g.handle(self.msg())
         instructions=self.sent[0]["instructions"]
         self.assertIn("Seja direto.",instructions)
-        self.assertIn("emoji pode ser reconhecido",instructions)
-        self.assertIn("Nunca diga que horário foi atualizado",instructions)
+        self.assertIn("👍 ou ✅",instructions)
+        self.assertIn("leitura oficial completa",instructions)
+        self.assertIn("Não peça revisão humana nesses casos claros",instructions)
 
 if __name__=="__main__":unittest.main()

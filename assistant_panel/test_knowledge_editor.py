@@ -31,8 +31,8 @@ class KnowledgeEditorTests(unittest.TestCase):
     def test_default_rules_include_schedule_and_emoji_guard(self):
         default = json.loads(Path(__file__).with_name("default_operator_instructions.json").read_text())
         checked = editor.validate_instructions(default)
-        self.assertIn("emoji", checked["text"].lower())
-        self.assertIn("nunca diga que foi atualizado", checked["text"].lower())
+        self.assertIn("👍", checked["text"])
+        self.assertIn("leitura oficial completa", checked["text"].lower())
 
 
 if __name__ == "__main__":
