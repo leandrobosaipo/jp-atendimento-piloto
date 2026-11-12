@@ -94,7 +94,7 @@ def notify_triage():
     try:
         with socket.socket(socket.AF_UNIX) as sock:
             sock.settimeout(8);sock.connect(str(endpoint));conn.sock=sock
-            conn.request('POST','/tick',body=b'{}',headers={'Content-Type':'application/json'})
+            conn.request('POST','/tick',body=b'')
             response=conn.getresponse()
             if response.status!=200:return {'ready':True,'pending':True}
             result=json.loads(response.read(2048))
