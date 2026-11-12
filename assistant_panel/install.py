@@ -9,7 +9,7 @@ import pwd
 import re
 import shutil
 import subprocess
-from gateway import validate_kb
+from gateway import validate_kb, validate_operator_instructions
 
 SRC=pathlib.Path(__file__).resolve().parent
 ROOT=SRC.parent
@@ -42,6 +42,8 @@ def install(args):
     kb=read_private(inbox/"kb.json",131072);key=read_private(inbox/"openai.key",400)
     if hashlib.sha256(kb).hexdigest()!=args.kb_sha256 or not re.fullmatch(rb"sk-[A-Za-z0-9_-]{20,360}",key.strip()):raise SystemExit("Private configuration mismatch")
     validate_kb(json.loads(kb))
+    instructions=(SRC/"default_operator_instructions.json").read_bytes()
+    validate_operator_instructions(json.loads(instructions))
     receipt=ROOT/"private/assistant-install"
     for path in [ETC,BIN,WEB,receipt,*[UNIT/n for n in NAMES],pathlib.Path("/var/lib/atendimento-piloto-ai"),pathlib.Path("/run/atendimento-piloto-ai.sock")]:
         if os.path.lexists(path):raise SystemExit("Reconcile existing package state")
@@ -54,7 +56,7 @@ def install(args):
         if not target.parent.exists():
             target.parent.mkdir(parents=True,mode=0o755);target.parent.chmod(0o755)
         target.mkdir();target.chmod(mode)
-    for name,data in (("openai.key",key),("kb.json",kb)):
+    for name,data in (("openai.key",key),("kb.json",kb),("operator-instructions.json",instructions)):
         with (ETC/name).open("xb") as f:f.write(data)
     for name in ("gateway.py","client.py"):
         shutil.copyfile(SRC/name,BIN/name);(BIN/name).chmod(0o755)

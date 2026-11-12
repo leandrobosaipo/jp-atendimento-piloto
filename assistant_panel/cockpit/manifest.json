@@ -1,1 +1,1 @@
-{"version":1,"requires":{"cockpit":"300"},"menu":{"index":{"label":"Teste de atendimento","order":30,"path":"index.html"}}}
+{"version":1,"requires":{"cockpit":"300"},"menu":{"index":{"label":"Teste de atendimento","order":30,"path":"index.html"},"editor":{"label":"Regras do Marcelinho","order":31,"path":"editor.html"}}}
