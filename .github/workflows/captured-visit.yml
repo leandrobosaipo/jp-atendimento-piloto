@@ -16,4 +16,5 @@ jobs:
           python3 core_sync/test_source.py
           node core_ops/test_captured_visit.mjs
           node core_ops/test_captured_confirmation.mjs
+          node --test core_ops/test_autonomous_same_day_reschedule.mjs core_ops/test_same_day_reschedule_integration.mjs core_ops/test_effect_guard.mjs core_ops/test_task_reads.mjs
           python3 core_ops/test_confirmation_permits.py

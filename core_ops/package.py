@@ -44,15 +44,15 @@ def wrap_reply(native,expected):
     replacements={
         'fetchImpl=deps.fetchImpl||fetch;':'fetchImpl=effectFetch(scopedFetch(deps.fetchImpl||fetch));',
         'return createReplyAutomation({...deps,readContext,slots,send,':'const engine=createReplyAutomation({...deps,readContext,slots,send,',
-        ' });\n}':' });\n return wrapEngine(engine,deps.load);\n}',
+        ' });\n}':' });\n return wrapEngine(wrapReplyPlanning(wrapSameDayReschedule(engine,deps),deps,withTask),deps.load);\n}',
         'async function readContext(t){':'function readContext(t){return withTask(t,deps.load,()=>readCustomer(t));}\n async function readCustomer(t){',
-        'await readReplyClients(deps.agendaConfig,{fetchImpl})':'await readTaskClients(native)',
+        "rows(await native('/pages/cadastros/buscaClientes.php',{}),'data')":'await readTaskClients(native)',
         "async function slots(t,{dates,period='any',context,selection}={}){":"function slots(t,opts){return withTask(t,deps.load,()=>readSlots(t,opts));}\n async function readSlots(t,{dates,period='any',context,selection}={}){",
     }
     for old,new in replacements.items():
         if native.count(old.encode())!=1:raise ValueError('reply_adapter_drift')
         native=native.replace(old.encode(),new.encode())
-    return b'import {effectFetch,wrapEngine} from "/ops-app/effect_client.mjs";\nimport {withTask,scopedFetch,readTaskClients} from "/ops-app/task_reads.mjs";\n'+native
+    return b'import {effectFetch,wrapEngine} from "/ops-app/effect_client.mjs";\nimport {withTask,scopedFetch,readTaskClients} from "/ops-app/task_reads.mjs";\nimport {wrapReplyPlanning,wrapSameDayReschedule} from "/ops-app/same_day_reschedule_integration.mjs";\n'+native
 
 if __name__=='__main__':
     p=argparse.ArgumentParser();p.add_argument('inputs',type=Path);p.add_argument('dest',type=Path);p.add_argument('--apply',action='store_true');a=p.parse_args()
