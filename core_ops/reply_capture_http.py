@@ -58,7 +58,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 policy = capture_link.CONF / "automatic-confirmations.json"
                 if policy.is_file():
                     cfg = json.loads(policy.read_bytes())
-                    if cfg["enabled"] and db.execute("SELECT 1 FROM captured c JOIN core_links l ON c.rowid=l.capture WHERE c.seq>? AND l.status IN ('awaiting_official','official_confirmed') LIMIT 1",(cfg["afterSequence"],)).fetchone():
+                    operator_feedback = (capture_link.ROOT / "ops-config/authorized-visit-feedback.json").is_file()
+                    if cfg["enabled"] and (operator_feedback or db.execute("SELECT 1 FROM captured c JOIN core_links l ON c.rowid=l.capture WHERE c.seq>? AND l.status IN ('awaiting_official','official_confirmed') LIMIT 1",(cfg["afterSequence"],)).fetchone()):
                         result["actionPending"] = capture_link.call("pending", {"cutoff":cfg["afterUtc"]})["actionPending"]
             with db:
                 db.execute("CREATE TABLE IF NOT EXISTS ticks(execution TEXT PRIMARY KEY, at INTEGER, summary TEXT)")

@@ -20,7 +20,15 @@ def standing_current(g):
     need(policy['enabled'] is True and g['operation']=='confirm' and g['capture_sequence']>policy['afterSequence']
          and unix(g['source_at'])>=unix(policy['afterUtc']) and g['source']==digest([g['message_id'],g['fingerprint']]))
     person=hashlib.sha256((g['phone'][1:]+'@s.whatsapp.net').encode()).hexdigest()
-    need(person==g['person'])
+    if person!=g['person']:
+        with sqlite3.connect('file:/var/lib/jp-dispatch/ledger.sqlite3?mode=ro',uri=True) as ledger:
+            destinations=ledger.execute('SELECT destination FROM dispatch_attempts WHERE native=?',(g['notice'],)).fetchall()
+        need(len(destinations)==1)
+        jid=destinations[0][0]
+        need(re.fullmatch(r'55[1-9]\d9?[6-9]\d{7}@s\.whatsapp\.net',jid) and hashlib.sha256(jid.encode()).hexdigest()==g['person'])
+        short,long=sorted([jid.split('@')[0],g['phone'][1:]],key=len)
+        need(len(short)==12 and len(long)==13 and long==short[:4]+'9'+short[4:])
+    person=g['person']
     src=ROOT.parent/'entrada-operacional/data/index/receive.sqlite3'
     with sqlite3.connect(src.as_uri()+'?mode=ro',uri=True) as queue,sqlite3.connect('file:/var/lib/jp-reply-capture/replies.sqlite3?mode=ro',uri=True) as db:
         high=queue.execute('SELECT max(seq) FROM receipts').fetchone()[0]

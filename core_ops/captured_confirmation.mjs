@@ -24,6 +24,17 @@ function revalidate(h,link){
 export function pendingCapturedWork(h,cutoff){
   if(!Number.isFinite(Date.parse(cutoff)))return false;
   const state=h.load(),out=state.jp_reply_ack_outbox||[];
+  const file='/ops-config/authorized-visit-feedback.json';
+  if(fs.existsSync(file)){
+    const permit=JSON.parse(fs.readFileSync(file));
+    const link=state.dell_reply_links?.[permit.link_key];
+    if(permit.authorization==='operator_confirmed_single_visit_move' && permit.authorization_id
+       && Date.parse(permit.valid_until)>Date.now() && link?.mid===permit.inbound_message_id
+       && link?.notice===permit.notice && !h.blocked(state,permit.destination_e164)
+       && JSON.stringify(permit.appointment_ids)===JSON.stringify(link.appointments)
+       && !(state.jp_reply_attempts||[]).some(a=>a.source_message_id===permit.inbound_message_id && a.kind==='send')
+       && !out.some(r=>r.link_key===link.key && r.state!=='queued'))return true;
+  }
   return Object.values(state.dell_reply_links||{}).some(link=>{
     if(!(Date.parse(link.at)>=Date.parse(cutoff)))return false;
     if(link.status==='official_confirmed'){
