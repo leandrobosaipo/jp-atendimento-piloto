@@ -117,7 +117,7 @@ def execute(root,audit,cfg,msg,upstream=provider):
     if g['target']=='fixture':need(upstream is not provider)
     else:need(upstream is provider)
     if action=='calendar':
-        need(b in g['reads'] and set(b)=={'profissional[]','dia','tipo'} and b['tipo']=='1' and b['profissional[]'] in g['professionals'])
+        need(any(b==allowed for allowed in g.get('reads',[])) and set(b)=={'profissional[]','dia','tipo'} and b['tipo']=='1' and b['profissional[]'] in g['professionals'])
         data=upstream(cfg,action,b);need(isinstance(data,list) and all(isinstance(r,dict) and str(r.get('id','')).isdigit() for r in data))
         return [{k:v for k,v in r.items() if k in ('id','codCliente','resources','sercodigo','start','end','codStatus','CIt_Codigo','Age_Confirmado')} for r in data if str(r.get('codCliente'))==s['client']]
     if action=='contact_read':

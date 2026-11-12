@@ -102,6 +102,11 @@ def notify_triage():
     except (OSError,ValueError,KeyError,http.client.HTTPException):
         return {'ready':True,'pending':True}
 
+def has_newer_identity(db, row, person):
+    """The capture schema stores aliases, never a plaintext/hash pn column."""
+    rows=db.execute('SELECT address_hashes FROM captured WHERE seq>? OR (seq=? AND rowid>?)',(row['seq'],row['seq'],row['rowid'])).fetchall()
+    return any(person in json.loads(raw) for raw, in rows)
+
 def issue_ready_reschedules(db, read, cfg, outbound):
     """Poll persisted human-review captures; never depend on the consume tick.
 
@@ -121,7 +126,7 @@ def issue_ready_reschedules(db, read, cfg, outbound):
         def latest_is_source(p):
             return (int(p.get('capture_sequence',-1))==int(row['seq']) and p.get('message_id')==row['message_id']
               and p.get('fingerprint')==row['content_sha256']
-              and not db.execute('SELECT 1 FROM captured WHERE seq>? AND pn=? LIMIT 1',(row['seq'],event['pn'])).fetchone()
+              and not has_newer_identity(db,row,p.get('person'))
               and not db.execute('SELECT 1 FROM team_events WHERE pn=? AND stamp>=?',(event['pn'],dt.datetime.fromisoformat(event['at']).timestamp())).fetchone())
         if issue_reschedule(ROOT,CONF,proposal,latest_is_source=latest_is_source):issued+=1
     return issued

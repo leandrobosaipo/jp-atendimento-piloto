@@ -1,6 +1,7 @@
 import fs from 'node:fs';
 import {matchVisit, consumeVisit} from './captured_visit.mjs';
 import {approval, guardedPost, keyOf} from './effect_guard.mjs';
+import {reschedulePolicyEligible} from './captured_same_day_reschedule.mjs';
 
 function scopes(link,target,context){
   const hex=link.key.slice(0,32);
@@ -36,6 +37,7 @@ export function pendingCapturedWork(h,cutoff){
        && !out.some(r=>r.link_key===link.key && r.state!=='queued'))return true;
   }
   if(Object.values(state.dell_reply_links||{}).some(link=>link.reschedule?.state==='grant_required'))return true;
+  try{const policy=JSON.parse(fs.readFileSync('/ops-config/automatic-reschedules.json','utf8'));if(Object.values(state.dell_reply_links||{}).some(link=>reschedulePolicyEligible(link,policy,cutoff)))return true;}catch{}
   return Object.values(state.dell_reply_links||{}).some(link=>{
     if(!(Date.parse(link.at)>=Date.parse(cutoff)))return false;
     if(link.status==='official_confirmed'){

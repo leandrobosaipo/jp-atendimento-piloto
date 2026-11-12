@@ -2,6 +2,7 @@
  * It has no sender. Writing occurs only through the pre-existing move grant.
  */
 import {createHash} from 'node:crypto';
+import fs from 'node:fs';
 import {matchVisit} from './captured_visit.mjs';
 import {selectAutonomousSameDayMove} from './autonomous_same_day_reschedule.mjs';
 import {readExactMoveSlot} from './task_reads.mjs';
@@ -10,11 +11,19 @@ const id = key => [key.slice(0,8),key.slice(8,12),key.slice(12,16),key.slice(16,
 const targetTime = text => [...String(text||'').normalize('NFD').replace(/\p{Diacritic}/gu,'').toLowerCase().matchAll(/\b(?:as|para|pra)\s*([01]?\d|2[0-3])(?::([0-5]\d)|h([0-5]\d)?)?\b/g)].map(m=>m[1].padStart(2,'0')+':'+(m[2]||m[3]||'00'));
 const changedDate = text => /\b(?:amanha|hoje|segunda|terca|quarta|quinta|sexta|sabado|domingo|dia\s*\d{1,2})\b|\b\d{1,2}[/-]\d{1,2}/.test(String(text||'').normalize('NFD').replace(/\p{Diacritic}/gu,'').toLowerCase());
 const named = text => [...new Set([[/\bpedro\b/,'16897547'],[/\balysson\b|\balisson\b/,'17055820']].filter(([r])=>r.test(String(text||'').normalize('NFD').replace(/\p{Diacritic}/gu,'').toLowerCase())).map(([,v])=>v))];
+const affirmative=text=>/\b(?:pode\s+(?:mudar|trocar|remarcar|reagendar)\s+(?:para|pra)|(?:vamos\s+)?(?:mudar|trocar|remarcar|reagendar)\s+(?:para|pra)|combinamos\s+(?:as|para|pra)|ficou\s+(?:as|para|pra))\b/.test(String(text||'').normalize('NFD').replace(/\p{Diacritic}/gu,'').toLowerCase())&&!/\b(?:nao|cancel\w*|desmarc\w*|talvez|se|seria|poderia|consegue|ocupad\w*|disponivel|acho)\b/.test(String(text||'').normalize('NFD').replace(/\p{Diacritic}/gu,'').toLowerCase());
+export function reschedulePolicyEligible(link,policy,cutoff){
+ const e=link?.sourceEvent,after=Date.parse(policy?.afterUtc),at=Date.parse(e?.at),cut=Date.parse(cutoff);
+ return policy?.enabled===true&&Number.isInteger(policy.afterSequence)&&Number.isFinite(after)&&Number.isFinite(at)&&Number.isFinite(cut)
+  && e.capture_sequence>policy.afterSequence&&at>=after&&at>=cut&&link.status==='human_review'&&!link.reschedule&&e.providerTime===true&&!e.intervened&&!e.conflict
+  && targetTime(e.text).length===1&&!changedDate(e.text)&&affirmative(e.text);
+}
 
 export async function prepareCapturedSameDayReschedule(h, {fetchImpl=fetch}={}) {
   let state=h.load();
+  let policy;try{policy=JSON.parse(fs.readFileSync('/ops-config/automatic-reschedules.json','utf8'));}catch{return {status:'idle'};}
   for(const link of Object.values(state.dell_reply_links||{})){
-    if(link.status!=='human_review'||!link.sourceEvent||link.reschedule?.state)continue;
+    if(!reschedulePolicyEligible(link,policy,policy.afterUtc))continue;
     const event=link.sourceEvent, target=matchVisit(event,state,h);
     const members=target.members||[];
     const times=targetTime(event.text), people=named(event.text);

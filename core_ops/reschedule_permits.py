@@ -9,14 +9,26 @@ from pathlib import Path
 def digest(value):
     return hashlib.sha256(json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(',', ':')).encode()).hexdigest()
 
+def write_once(path, value):
+    if path.exists():return json.loads(path.read_bytes())
+    path.parent.mkdir(mode=0o750,parents=True,exist_ok=True);fd,tmp=tempfile.mkstemp(dir=path.parent)
+    try:
+      with os.fdopen(fd,'w') as out:
+        os.fchmod(out.fileno(),0o640);os.fchown(out.fileno(),-1,path.parent.stat().st_gid);json.dump(value,out);out.flush();os.fsync(out.fileno())
+      os.replace(tmp,path)
+    finally:Path(tmp).unlink(missing_ok=True)
+    return value
+
 def issue(root, conf, proposal, *, latest_is_source):
     policy_path=conf/'automatic-reschedules.json'
     if not policy_path.is_file(): return None
     policy=json.loads(policy_path.read_bytes())
     required=('task_id','source','appointment_id','client','phone','before','slot','capture_sequence','message_id','fingerprint','source_at','person')
-    if policy.get('enabled') is not True or not all(k in proposal for k in required): return None
+    if policy.get('enabled') is not True or not isinstance(policy.get('afterSequence'),int) or not isinstance(policy.get('afterUtc'),str) or not all(k in proposal for k in required): return None
     if not re.fullmatch(r'[a-f0-9-]{36}',proposal['task_id']) or not re.fullmatch(r'[a-f0-9]{64}',proposal['source']) or not re.fullmatch(r'\+55\d{10,11}',proposal['phone']): return None
-    if not latest_is_source(proposal): return None
+    try: after=dt.datetime.fromisoformat(policy['afterUtc'].replace('Z','+00:00'));source_at=dt.datetime.fromisoformat(proposal['source_at'].replace('Z','+00:00'))
+    except ValueError:return None
+    if proposal['capture_sequence']<=policy['afterSequence'] or source_at<after or not latest_is_source(proposal): return None
     slot,before=proposal['slot'],proposal['before']
     if not (slot.get('date')==before.get('date') and slot.get('professional_code')==before.get('professional_code') and slot.get('service_code')==before.get('service_code') and slot.get('duration_minutes')==before.get('duration_minutes')): return None
     if slot.get('time')==before.get('time') or not re.fullmatch(r'\d{4}-\d{2}-\d{2}',str(slot.get('date'))) or not re.fullmatch(r'([01]\d|2[0-3]):[0-5]\d',str(slot.get('time'))): return None
@@ -27,16 +39,9 @@ def issue(root, conf, proposal, *, latest_is_source):
     if not isinstance(proposal['person'],str) or not re.fullmatch(r'[a-f0-9]{64}',proposal['person']) or not isinstance(proposal['source_at'],str):return None
     grant={'schema':1,'role':'reply','workflow':role['workflow'],'node':node,'task':proposal['task_id'],'source':proposal['source'],'client':proposal['client'],'phone':proposal['phone'],'operation':'move','reference':proposal['appointment_id'],'epoch':own['epoch'],'approved_by':'JP captured affirmative same-day reschedule','authorization':True,'target':'official','approved_at':now.isoformat(),'until':min(now+dt.timedelta(minutes=4),until).isoformat(),'payload_sha256':digest(body),'capture_sequence':proposal['capture_sequence'],'message_id':proposal['message_id'],'fingerprint':proposal['fingerprint'],'source_at':proposal['source_at'],'person':proposal['person']}
     key=digest(['reply',grant['task'],grant['source'],'move',grant['reference']]); path=root/'ops-config/grants'/(key+'.json')
-    if path.exists(): return json.loads(path.read_bytes())
-    path.parent.mkdir(mode=0o750,parents=True,exist_ok=True)
-    # Keep the grant readable by the existing reply service group even where
-    # the filesystem has not inherited setgid.  Never make it world-readable.
-    fd,tmp=tempfile.mkstemp(dir=path.parent)
-    try:
-      with os.fdopen(fd,'w') as out:
-        os.fchmod(out.fileno(),0o640)
-        os.fchown(out.fileno(),-1,path.parent.stat().st_gid)
-        json.dump(grant,out);out.flush();os.fsync(out.fileno())
-      os.replace(tmp,path)
-    finally: Path(tmp).unlink(missing_ok=True)
-    return grant
+    stored=write_once(path,grant)
+    # Exact calendar read required by the native move readback; no broad agenda grant.
+    read_fields=['reply',grant['workflow'],grant['node'],grant['source'],grant['client'],grant['phone'],grant['task']]
+    read_key=digest(['calendar']+read_fields);calendar={'role':'reply','workflow':grant['workflow'],'node':grant['node'],'source':grant['source'],'client':grant['client'],'phone':grant['phone'],'task':grant['task'],'epoch':grant['epoch'],'schema':1,'authorization':True,'approved_by':grant['approved_by'],'target':'official','approved_at':grant['approved_at'],'until':grant['until'],'professionals':[slot['professional_code']],'reads':[{'profissional[]':slot['professional_code'],'dia':'/'.join(slot['date'].split('-')[::-1]),'tipo':'1'}]}
+    write_once(root/'ops-config/read-grants'/(read_key+'.json'),calendar)
+    return stored

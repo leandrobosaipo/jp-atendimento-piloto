@@ -8,7 +8,7 @@ function rowIsSafe(row){return row&&row.kind==='reschedule'&&row.state==='queued
 async function evidence(h,state,row){
  const link=state.dell_reply_links?.[row.link_key],p=link?.reschedule,attempt=(state.jp_reply_attempts||[]).find(x=>x.task_id===row.reschedule_task_id&&x.kind==='move');
  if(!p||p.state!=='saved'||!attempt||attempt.status!=='saved'||String(p.appointment_id)!==String(row.appointment_ids[0])||p.phone!==row.destination_e164||!p.readback)return false;
- const after=await h.read({appointment_id:p.appointment_id,client_code:p.client,professional_code:p.slot.professional_code,service_code:p.slot.service_code,appointment_date_iso:p.slot.date,appointment_time:p.slot.time});
+ const after=await h.read({kind:'appointment_confirmation',appointment_id:p.appointment_id,client_code:p.client,professional_code:p.slot.professional_code,service_code:p.slot.service_code,appointment_date_iso:p.slot.date,appointment_date:p.slot.date.split('-').reverse().join('/'),appointment_time:p.slot.time});
  return after?.appointment_id===p.appointment_id&&after?.client_code===p.client&&after?.professional_code===p.slot.professional_code&&after?.service_code===p.slot.service_code&&String(after?.start||'').startsWith(p.slot.date+'T'+p.slot.time)&&after?.status==='1';
 }
 export async function executeRescheduleFeedback(h,fetchImpl=fetch){

@@ -36,7 +36,7 @@ function changesDate(message) {
 function affirmativeMove(message) {
   const value=text(message);
   const affirmative=/\b(?:pode\s+(?:mudar|trocar|remarcar|reagendar)\s+(?:para|pra)|(?:vamos\s+)?(?:mudar|trocar|remarcar|reagendar)\s+(?:para|pra)|combinamos\s+(?:as|para|pra)|ficou\s+(?:as|para|pra))\b/.test(value);
-  if (!affirmative || /\b(?:nao|cancel|desmarc|talvez|se|seria|poderia|consegue|ocupad|disponivel|acho)\b/.test(value)) return false;
+  if (!affirmative || /\b(?:nao|cancel\w*|desmarc\w*|talvez|se|seria|poderia|consegue|ocupad\w*|disponivel|acho)\b/.test(value)) return false;
   return true;
 }
 
