@@ -39,6 +39,8 @@ for(const change of [{quote:'different'},{delivered:[]},{disposition:'removed'},
   assert.deepEqual(projectOfficialAcknowledgements(state,cutoff),{created:1,queued:1});
   const [ack]=state.jp_reply_ack_outbox;
   assert.equal(ack.kind,'emoji');assert.equal(ack.text,'👍');
+  assert.equal(ack.source_at,e.at);
+  assert.equal(Object.values(state.dell_reply_links)[0].ackCandidates[0].appointment_id,'1');
   assert.equal(ack.destination_e164,'+5500000000000');
   assert.deepEqual(projectOfficialAcknowledgements(state,cutoff),{created:0,queued:1});
   assert.deepEqual(projectOfficialAcknowledgements(state,new Date(Date.now()+1000).toISOString()),{created:0,queued:1});

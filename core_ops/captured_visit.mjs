@@ -83,6 +83,11 @@ export async function consumeVisit(event, h, preview=false) {
   if (receipt && receipt.status===status) return {status,members:appointments.length,confirmRequest};
   seen[key]={key,status,mid:event.mid,at:event.at,kind:event.kind,record:event.record,notice:notice||null,appointments,checkedAt:new Date().toISOString()};
   if(grantable)seen[key].confirmationEvidence={event,snapshots:target.members.map(h.snapshot)};
+  if(status==='official_confirmed')seen[key].ackCandidates=target.members.map(c=>({
+    kind:'appointment_confirmation',appointment_id:c.appointment_id,client_code:c.client_code,
+    destination_e164:c.destination_e164,appointment_date:c.appointment_date,appointment_date_iso:c.appointment_date_iso,
+    appointment_time:c.appointment_time,service_code:c.service_code,professional_code:c.professional_code
+  }));
   if (notice && target.candidate && appointments.length) {
     state.messages||=[];
     if(!state.messages.some(m=>m.instance===h.instance && m.message_id===event.mid)){
@@ -126,11 +131,14 @@ export function projectOfficialAcknowledgements(state, cutoff) {
     if(link.status!=='official_confirmed'||Date.parse(link.at)<Date.parse(cutoff)||!link.key||!Array.isArray(link.appointments)||!link.appointments.length)continue;
     const related=responses.filter(r=>r.message_id===link.mid&&r.source==='dell_capture'&&link.appointments.includes(r.appointment_id));
     const destinations=[...new Set(related.map(r=>r.destination_e164).filter(Boolean))];
-    if(destinations.length!==1||related.length!==link.appointments.length)continue;
+    if(destinations.length!==1||related.length!==link.appointments.length
+       ||new Set(related.map(r=>r.appointment_id)).size!==link.appointments.length
+       ||!link.appointments.every(id=>related.some(r=>r.appointment_id===id&&r.outbound_message_id===link.notice
+          &&r.official_update?.status==='confirmed'&&r.official_update.readback?.confirmed===true)))continue;
     const id=digest(JSON.stringify([link.key,link.appointments]));
     if(out.some(x=>x.id===id))continue;
     out.push({id,link_key:link.key,appointment_ids:[...link.appointments],destination_e164:destinations[0],
-      inbound_message_id:link.mid,kind:(link.kind==='reaction'||link.kind==='emoji_text')?'emoji':'text',
+      inbound_message_id:link.mid,source_at:link.at,kind:(link.kind==='reaction'||link.kind==='emoji_text')?'emoji':'text',
       text:(link.kind==='reaction'||link.kind==='emoji_text')?'👍':'Confirmado.',state:'queued',created_at:new Date().toISOString()});created++;
   }
   return {created,queued:out.filter(x=>x.state==='queued').length};
