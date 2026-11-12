@@ -21,7 +21,7 @@ export async function executePreparedReschedule(h,{grantPresent,recheck,move,enq
   if(!await grantPresent(p))return {status:'grant_required'};
   if(!sameSlot(p,await recheck(p)))return {status:'held'};
   if((state.jp_reply_attempts||[]).some(a=>a.task_id===p.task_id&&a.kind==='move'))return {status:'write_unknown'};
-  state.jp_reply_attempts||=[];state.jp_reply_attempts.push({task_id:p.task_id,kind:'move',status:'write_unknown',appointment_id:p.appointment_id,source_sha256:p.source,before:p.before,option:p.slot});p.state='write_pending';state.version=(state.version||0)+1;h.save(state);
+  state.jp_reply_attempts||=[];state.jp_reply_attempts.push({task_id:p.task_id,kind:'move',status:'write_unknown',attempted_at:new Date().toISOString(),appointment_id:p.appointment_id,client_code:p.client,destination_e164:p.phone,source_sha256:p.source,before:{...p.before,appointment_id:p.appointment_id},option:p.slot});p.state='write_pending';state.version=(state.version||0)+1;h.save(state);
   const after=await move(p);
   if(!after||after.appointment_id!==p.appointment_id||after.client_code!==p.client||after.professional_code!==p.slot.professional_code||after.service_code!==p.slot.service_code||!String(after.start||'').startsWith(p.slot.date+'T'+p.slot.time))return {status:'write_unknown'};
   const latest=h.load(),row=(latest.jp_reply_attempts||[]).find(a=>a.task_id===p.task_id&&a.kind==='move');

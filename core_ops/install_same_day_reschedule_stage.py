@@ -4,13 +4,15 @@ This is deliberately a source transformer, not a runtime deployer.  It fails
 closed when the exact stage anchors are absent, so it cannot silently attach to
 the legacy reply-plan path.
 """
-IMPORT='import {runCapturedReschedule} from "/ops-app/captured_reschedule_pipeline.mjs";\nimport {executeRescheduleFeedback} from "/ops-app/reply_reschedule_feedback_executor.mjs";\n'
-ANCHOR="const confirmation=await runCapturedConfirmation(capturedVisitHelpers);"
-INSERT="""const confirmation=await runCapturedConfirmation(capturedVisitHelpers);
-      const reschedule=await runCapturedReschedule(capturedVisitHelpers,rescheduleHelpers);
-      const rescheduleFeedback=await executeRescheduleFeedback(capturedVisitHelpers);
-"""
+IMPORT='import {runCapturedReschedule} from "/ops-app/captured_reschedule_pipeline.mjs";\nimport {executeRescheduleFeedback} from "/ops-app/reply_reschedule_feedback_executor.mjs";\nimport {createSameDayRescheduleHelpers} from "/ops-app/same_day_reschedule_helpers.mjs";\n'
+ANCHOR="const confirmation=await runCapturedConfirmation("
+INSERT="""const reschedule=await runCapturedReschedule(capturedVisitHelpers,rescheduleHelpers);
+        let rescheduleFeedback={status:'idle'};
+        try{if(dispatchReady)rescheduleFeedback=await executeRescheduleFeedback(capturedVisitHelpers);}catch{rescheduleFeedback={status:'held'};}
+        const confirmation=await runCapturedConfirmation("""
+HELPER_ANCHOR='serveCapture(capturedVisitHelpers);'
+HELPER_INSERT='const rescheduleHelpers=createSameDayRescheduleHelpers({load,agendaConfig,moveOfficialAppointment,fetchImpl:fetch});\nserveCapture(capturedVisitHelpers);'
 def inject(source):
-    if source.count(ANCHOR)!=1 or source.count('stage===\'reply-execute\'')!=1:raise ValueError('reply_execute_4414148_anchor_missing')
+    if source.count(ANCHOR)!=1 or source.count(HELPER_ANCHOR)!=1 or source.count('stage===\'reply-execute\'')!=1:raise ValueError('reply_execute_4414148_anchor_missing')
     if 'runCapturedReschedule' in source or 'executeRescheduleFeedback' in source:raise ValueError('same_day_reschedule_already_present')
-    return IMPORT+source.replace(ANCHOR,INSERT).replace('confirmation, acknowledgement','confirmation, reschedule, rescheduleFeedback, acknowledgement')
+    return IMPORT+source.replace(HELPER_ANCHOR,HELPER_INSERT).replace(ANCHOR,INSERT).replace('confirmation:confirmation.status,attempted:', 'confirmation:confirmation.status,reschedule:reschedule.status,rescheduleFeedback:rescheduleFeedback.status,attempted:')

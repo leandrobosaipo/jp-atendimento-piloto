@@ -42,6 +42,9 @@ export async function prepareCapturedSameDayReschedule(h, {fetchImpl=fetch}={}) 
           before:{date:visit.appointment_date_iso,time:visit.appointment_time,professional_code:visit.professional_code,service_code:visit.service_code,duration_minutes:slot.duration_minutes,item_code:before.item_code},
           slot,capture_sequence:event.capture_sequence,message_id:event.mid,fingerprint:event.content,source_at:event.at};
         if(!Number.isInteger(proposal.capture_sequence)||!proposal.fingerprint)throw Error('capture_proof_missing');
+        const stored=state.jp_reply_tasks.find(row=>row.task_id===task.task_id);
+        if(!stored||stored.status!=='planned')throw Error('move_task_not_planned');
+        stored.plan={kind:'move',move_appointment_id:String(visit.appointment_id),option:slot};
         link.reschedule={state:'grant_required',...proposal,at:new Date().toISOString()};state.version=(state.version||0)+1;h.save(state);return {status:'grant_required',task_id:task.task_id,proposal};
       }
     }catch{reason='official_availability_unverified';}
