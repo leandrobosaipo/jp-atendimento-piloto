@@ -9,7 +9,7 @@ const taskFor=(load,p)=>{
  if(row.length!==1)throw Error('reschedule_task_unbound');return row[0];
 };
 const scopeFor=p=>({...admitted('reply',['reply-execute']),task:p.task_id,source:p.source,client:String(p.client),phone:p.phone,operation:'move',reference:String(p.appointment_id)});
-const visitFor=p=>({appointment_id:String(p.appointment_id),client_code:String(p.client),destination_e164:p.phone,appointment_date_iso:p.before.date,appointment_time:p.before.time,professional_code:String(p.before.professional_code),service_code:String(p.before.service_code),duration_minutes:p.before.duration_minutes,item_code:p.before.item_code});
+const visitFor=p=>({kind:'appointment_confirmation',appointment_id:String(p.appointment_id),client_code:String(p.client),destination_e164:p.phone,appointment_date_iso:p.before.date,appointment_date:p.before.date.split('-').reverse().join('/'),appointment_time:p.before.time,professional_code:String(p.before.professional_code),service_code:String(p.before.service_code),duration_minutes:p.before.duration_minutes,item_code:p.before.item_code});
 
 export function createSameDayRescheduleHelpers({load,agendaConfig,moveOfficialAppointment,fetchImpl=fetch}){
  if(typeof load!=='function'||typeof agendaConfig!=='function'||typeof moveOfficialAppointment!=='function')throw Error('reschedule_helpers_dependencies_required');
@@ -17,7 +17,11 @@ export function createSameDayRescheduleHelpers({load,agendaConfig,moveOfficialAp
   async grantPresent(p){try{if(!valid(p))return false;taskFor(load,p);const grant=approval('/ops-config','/ops-state',scopeFor(p));return grant.approved_by==='JP captured affirmative same-day reschedule';}catch{return false;}},
   async recheck(p){if(!valid(p))return null;const task=taskFor(load,p);return readExactMoveSlot(task,load,visitFor(p),p.slot.time,fetchImpl);},
   async move(p){if(!valid(p))throw Error('reschedule_move_scope_denied');const task=taskFor(load,p),visit=visitFor(p);
-   return withReplyEffect(task,load,()=>moveOfficialAppointment(visit,p.slot,agendaConfig(),async()=>{},effectFetch(fetchImpl)));
+   return withReplyEffect(task,load,async()=>{
+     const result=await moveOfficialAppointment(visit,p.slot,agendaConfig(),async()=>{},effectFetch(fetchImpl));
+     // A saved/accepted write without the exact official readback stays unknown.
+     return result?.readback?{...result,readback:result.readback}:{status:'write_unknown'};
+   });
   }
  };
 }

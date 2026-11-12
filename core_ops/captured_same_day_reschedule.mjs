@@ -12,7 +12,7 @@ const changedDate = text => /\b(?:amanha|hoje|segunda|terca|quarta|quinta|sexta|
 const named = text => [...new Set([[/\bpedro\b/,'16897547'],[/\balysson\b|\balisson\b/,'17055820']].filter(([r])=>r.test(String(text||'').normalize('NFD').replace(/\p{Diacritic}/gu,'').toLowerCase())).map(([,v])=>v))];
 
 export async function prepareCapturedSameDayReschedule(h, {fetchImpl=fetch}={}) {
-  const state=h.load();
+  let state=h.load();
   for(const link of Object.values(state.dell_reply_links||{})){
     if(link.status!=='human_review'||!link.sourceEvent||link.reschedule?.state)continue;
     const event=link.sourceEvent, target=matchVisit(event,state,h);
@@ -34,18 +34,24 @@ export async function prepareCapturedSameDayReschedule(h, {fetchImpl=fetch}={}) 
       if(!before||String(before.appointment_id)!==String(visit.appointment_id)||String(before.client_code)!==String(visit.client_code)
         ||String(before.service_code)!==String(visit.service_code)||String(before.professional_code)!==String(visit.professional_code)
         ||before.status!=='1'||!before.item_code)throw Error('official_before_unverified');
+      const start=Date.parse(before.start),end=Date.parse(before.end);
+      const duration_minutes=(end-start)/60000;
+      if(!Number.isInteger(duration_minutes)||duration_minutes<=0)throw Error('official_duration_unverified');
       const slot=await readExactMoveSlot(task,h.load,visit,times[0],fetchImpl);
-      const decision=selectAutonomousSameDayMove({message:event.text,visits:[{...visit,duration_minutes:slot.duration_minutes}],availability:{source:'official_task_reader',appointment_id:visit.appointment_id,date:visit.appointment_date_iso,professional_code:visit.professional_code,service_code:visit.service_code,read_at:new Date().toISOString(),slots:[slot]}});
+      const decision=selectAutonomousSameDayMove({message:event.text,visits:[{...visit,duration_minutes}],availability:{source:'official_task_reader',appointment_id:visit.appointment_id,date:visit.appointment_date_iso,professional_code:visit.professional_code,service_code:visit.service_code,read_at:new Date().toISOString(),slots:[slot]}});
       if(decision.action!=='move')reason=decision.reason;
       else {
-        const proposal={task_id:task.task_id,source:link.key,appointment_id:visit.appointment_id,client:visit.client_code,phone:visit.destination_e164,
-          before:{date:visit.appointment_date_iso,time:visit.appointment_time,professional_code:visit.professional_code,service_code:visit.service_code,duration_minutes:slot.duration_minutes,item_code:before.item_code},
-          slot,capture_sequence:event.capture_sequence,message_id:event.mid,fingerprint:event.content,source_at:event.at};
+        // Re-load after official reads; never overwrite a newer capture/hold.
+        state=h.load();const current=state.dell_reply_links?.[link.key];
+        if(!current||current.status!=='human_review'||current.sourceEvent?.mid!==event.mid||current.sourceEvent?.content!==event.content)throw Error('captured_source_changed');
+        const proposal={task_id:task.task_id,source:current.key,appointment_id:visit.appointment_id,client:visit.client_code,phone:visit.destination_e164,
+          before:{date:visit.appointment_date_iso,time:visit.appointment_time,professional_code:visit.professional_code,service_code:visit.service_code,duration_minutes,item_code:before.item_code},
+          slot,capture_sequence:event.capture_sequence,message_id:event.mid,fingerprint:event.content,source_at:event.at,person:event.pn};
         if(!Number.isInteger(proposal.capture_sequence)||!proposal.fingerprint)throw Error('capture_proof_missing');
         const stored=state.jp_reply_tasks.find(row=>row.task_id===task.task_id);
         if(!stored||stored.status!=='planned')throw Error('move_task_not_planned');
         stored.plan={kind:'move',move_appointment_id:String(visit.appointment_id),option:slot};
-        link.reschedule={state:'grant_required',...proposal,at:new Date().toISOString()};state.version=(state.version||0)+1;h.save(state);return {status:'grant_required',task_id:task.task_id,proposal};
+        current.reschedule={state:'grant_required',...proposal,at:new Date().toISOString()};state.version=(state.version||0)+1;h.save(state);return {status:'grant_required',task_id:task.task_id,proposal};
       }
     }catch{reason='official_availability_unverified';}
     link.reschedule={state:'human_review',reason,at:new Date().toISOString()};state.version=(state.version||0)+1;h.save(state);return {status:'human_review',reason};

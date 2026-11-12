@@ -145,6 +145,13 @@ export function projectOfficialAcknowledgements(state, cutoff) {
   return {created,queued:out.filter(x=>x.state==='queued').length};
 }
 
+export function readRescheduleProposal(input,h){
+  const key=digest(JSON.stringify([input?.mid,input?.content]));
+  const proposal=h.load().dell_reply_links?.[key]?.reschedule;
+  if(!proposal||proposal.state!=='grant_required'||proposal.message_id!==input?.mid||proposal.fingerprint!==input?.content)return {status:'idle'};
+  return {status:'grant_required',proposal:structuredClone(proposal)};
+}
+
 export function serveCapture(h){
   const file='/state/.jp-reply-ingress.sock',token=fs.readFileSync('/ops-config/reply-ingress.key','utf8').trim();
   if(!/^[a-f0-9]{64}$/.test(token)) throw Error('invalid_capture_key');
@@ -165,8 +172,9 @@ export function serveCapture(h){
         return answer(200,{actionPending:pendingCapturedWork(h,input.cutoff)});
       }
       if(req.url==='/reschedule-proposal'){
-        const {prepareCapturedSameDayReschedule}=await import('./captured_same_day_reschedule.mjs');
-        return answer(200,await prepareCapturedSameDayReschedule(h));
+        // Capture may only observe a proposal prepared in admitted reply-execute.
+        // It never invokes task reads or changes core state from this socket.
+        return answer(200,readRescheduleProposal(input,h));
       }
       answer(200,await consumeVisit(input,h,req.url==='/preview'));
     }catch{answer(503,{error:'reply_held'});}finally{busy=false;}

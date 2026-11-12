@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import {createHash} from 'node:crypto';
-import {consumeVisit,projectOfficialAcknowledgements} from './captured_visit.mjs';
+import {consumeVisit,projectOfficialAcknowledgements,readRescheduleProposal} from './captured_visit.mjs';
 
 const sha=v=>createHash('sha256').update(v).digest('hex');
 const date=new Date(Date.now()+86400000).toISOString().slice(0,10);
@@ -53,4 +53,11 @@ for(const change of [{quote:'different'},{delivered:[]},{disposition:'removed'},
   assert.deepEqual(projectOfficialAcknowledgements(state,'2026-11-12T00:00:00.000Z'),{created:0,queued:0});
 }
 assert.throws(()=>projectOfficialAcknowledgements({},'not-a-date'),/ack_cutoff_required/);
+{
+ const mid='reschedule-mid',content=sha('reschedule-content'),key=sha(JSON.stringify([mid,content]));
+ const state={dell_reply_links:{[key]:{reschedule:{state:'grant_required',message_id:mid,fingerprint:content,task_id:'t'}}}};
+ const h={load:()=>state};assert.equal(readRescheduleProposal({mid,content},h).status,'grant_required');
+ assert.equal(readRescheduleProposal({mid:'later',content},h).status,'idle');
+ assert.deepEqual(state.dell_reply_links[key].reschedule,{state:'grant_required',message_id:mid,fingerprint:content,task_id:'t'});
+}
 console.log('captured_visit: association, official readback, hold, deduplication and preview passed');

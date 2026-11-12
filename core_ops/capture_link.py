@@ -114,7 +114,7 @@ def issue_ready_reschedules(db, read, cfg, outbound):
     cols=[d[0] for d in db.execute("SELECT c.rowid,c.* FROM captured c JOIN core_links l ON l.capture=c.rowid WHERE 0").description]
     for values in rows:
         row=dict(zip(cols,values));event=make_event(row,read,cfg,outbound)
-        prepared=call('reschedule-proposal',{})
+        prepared=call('reschedule-proposal',event)
         proposal=prepared.get('proposal')
         if not proposal or proposal.get('message_id')!=row['message_id']:continue
         from reschedule_permits import issue as issue_reschedule
