@@ -15,6 +15,10 @@ HELPERS_REPLACEMENT = """const capturedVisitHelpers={load,save,instance,target:i
 serveCapture(capturedVisitHelpers);"""
 IMPORT = "import {runCapturedConfirmation} from \"/ops-app/captured_confirmation.mjs\";\nimport {executeAcknowledgements} from \"/ops-app/reply_ack_executor.mjs\";\n"
 STAGE = """      if(stage==='reply-execute'){
+        if(identity.workflowId!==n8nReplyWorkflowId)return reply(res,403,{ok:false,error:'reply_workflow_scope_denied'});
+        if(!n8nStageSendEnabled)return n8nStageResponse(res,identity,stage,200,{ok:true,status:'paused',attempted:0});
+        if(replyDispatchLease)replyDispatchLease.executor=req;
+        try{
         const dispatchReady=dispatchSyncProof(load(),identity.executionId,true);
         const confirmation=await runCapturedConfirmation({...capturedVisitHelpers,dispatchReady:execution=>execution===identity.executionId&&dispatchReady});
         let acknowledgement={status:'idle'};
@@ -24,6 +28,7 @@ STAGE = """      if(stage==='reply-execute'){
         }}catch{acknowledgement={status:'held'};}
         if(!dispatchReady) acknowledgement={status:'preflight_held'};
         return n8nStageResponse(res,identity,stage,200,{ok:true,status:acknowledgement.status,confirmation:confirmation.status,attempted:acknowledgement.status==='provider_accepted'?1:0});
+        }finally{if(replyDispatchLease?.executor===req)replyDispatchLease=null;}
       }
 """
 
@@ -37,8 +42,17 @@ def patched(data):
     if data.count(anchor) != 1:
         raise ValueError("reply_stage_anchor_missing")
     data = data.replace(HELPERS.encode(), HELPERS_REPLACEMENT.encode())
-    data = IMPORT.encode() + data.replace(anchor, STAGE.encode() + anchor)
+    data = IMPORT.encode() + data.replace(anchor, anchor + b"\n" + STAGE.encode())
     return data
+
+
+def repair_installed(data, previous_stage):
+    """Move the reviewed stage into the initialized scope on a deployed core."""
+    anchor = b"      const stage=req.url.slice('/api/n8n/stages/'.length),sendStages=new Set(['send-initial','send-reminders','support']);"
+    old = previous_stage + anchor
+    if data.count(old) != 1:
+        raise ValueError("unexpected_installed_reply_stage")
+    return data.replace(old, anchor + b"\n" + STAGE.encode())
 
 
 if __name__ == '__main__':
