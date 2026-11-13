@@ -62,6 +62,8 @@ async function currentEvidence(h,state,row){
 
 export async function executeAcknowledgements(h, cutoff, fetchImpl=fetch) {
   if(!Number.isFinite(Date.parse(cutoff))) throw Error('ack_cutoff_required');
+  const clarification=await askOne(h,fetchImpl);
+  if(clarification)return clarification;
   let state=h.load();
   const projected=projectOfficialAcknowledgements(state,cutoff), exceptionCreated=projectAuthorizedException(state);
   if(projected.created||exceptionCreated){state.version=(state.version||0)+1;h.save(state);}
@@ -69,8 +71,6 @@ export async function executeAcknowledgements(h, cutoff, fetchImpl=fetch) {
   const row=(state.jp_reply_ack_outbox||[]).filter(item=>safeAck(item,cutoff))
     .sort((a,b)=>Date.parse(a.source_at)-Date.parse(b.source_at)||a.id.localeCompare(b.id))[0];
   if(!row){
-    const clarification=await askOne(h,fetchImpl);
-    if(clarification)return clarification;
     const previous=(state.jp_reply_ack_outbox||[]).filter(item=>inScope(item,cutoff))
       .map(item=>(state.jp_reply_attempts||[]).find(attempt=>attempt.attempt_id===item.id)).find(Boolean);
   return {status:previous?.status==='provider_accepted'?'accepted':previous?'delivery_unknown':'idle',projected:projected.created+exceptionCreated};
