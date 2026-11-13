@@ -391,8 +391,13 @@ def main():
         os.chown(SOCKET, 0, CORE_UID)
         os.chmod(SOCKET, 0o660)
         server.policy = policy
-        server.dispatcher = Dispatcher(Outbox(LEDGER), policy.authorize, native, verify_number=native.verify)
-        server.serve_forever()
+        outbox = Outbox(LEDGER)
+        server.dispatcher = Dispatcher(outbox, policy.authorize, native, verify_number=native.verify)
+        # Capture reads this directory through a read-only mount. Keep the WAL
+        # sidecars available between sends without retaining a read transaction.
+        with outbox.db() as keeper:
+            keeper.execute("SELECT count(*) FROM sqlite_schema").fetchone()
+            server.serve_forever()
 
 
 if __name__ == "__main__":
