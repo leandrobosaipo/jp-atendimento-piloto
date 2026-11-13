@@ -38,4 +38,17 @@ def patched(text):
   const responses=state.jp_responses.filter(r=>!(r.message_id===resolved.original&&r.outbound_message_id===resolved.notice&&resolved.ids.includes(r.appointment_id))).map(r=>r.message_id===resolved.answer&&r.outbound_message_id===resolved.question&&resolved.ids.includes(r.appointment_id)?{...r,outbound_message_id:resolved.notice}:r);
   return project({...state,jp_responses:responses});
 }""")
-    return text
+    # The persistence hook and the explicit reconcile stage must use the same
+    # interpretation as planning. A raw projection would re-pause a new row.
+    call='reconcileVisitFeedback(state,candidates().rows,instance,{isCurrent:(c,d)=>currentAppointmentAttempt(state,c,d)})'
+    if text.count(call)!=2:
+        raise ValueError('changed_reconcile_hooks')
+    return text.replace(call,'reconcileVisitFeedback(state,candidates().rows,instance,{project:visitFeedback,isCurrent:(c,d)=>currentAppointmentAttempt(state,c,d)})')
+
+
+def patched_feedback(text):
+    expected='5ac5eca7ec50ac62f1684b12cab62359018a3f8a159c38838cf8b840e885c89a'
+    anchor='const feedback=visitFeedbackFor(candidate,state,instance,options);'
+    if hashlib.sha256(text.encode()).hexdigest()!=expected or text.count(anchor)!=1:
+        raise ValueError('changed_feedback_runtime')
+    return text.replace(anchor,'const feedback=options?.project ? options.project(candidate,state) : visitFeedbackFor(candidate,state,instance,options);')
