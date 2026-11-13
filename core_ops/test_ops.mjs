@@ -7,6 +7,21 @@ import {createHash,randomUUID} from "node:crypto";
 import {operational} from "./admission.mjs";
 import {acceptedKey,records,resolveAttempt} from "./dispatch.mjs";
 const sha=s=>createHash("sha256").update(s).digest("hex");
+test("busy reply preserves the error source without repeating its operation",async t=>{
+  const dir=fs.mkdtempSync(path.join(os.tmpdir(),"jp-error-"));t.after(()=>fs.rmSync(dir,{recursive:true,force:true}));
+  const route="/api/n8n/stages/record-error",workflow="handler",node="record",token="x".repeat(40);
+  fs.mkdirSync(path.join(dir,"admissions"));
+  fs.writeFileSync(path.join(dir,"ownership.json"),JSON.stringify({mode:"owned",roles:["error"],owner:"dell",epoch:randomUUID(),until:new Date(Date.now()+60000)}));
+  let calls=0;
+  const handle=operational({manifest:{error:{workflow,nodes:{[node]:route}}},secrets:{owner:"dell",roles:{error:token}},stateDir:dir,
+    inner:async()=>{calls++;return {status:409,body:{ok:false,error:"reply_operation_busy"}}}});
+  const req={route,workflow,node,execution:"41",authorization:"Bearer "+token,raw:Buffer.from(JSON.stringify({source_workflow_id:"reply",source_execution_id:"40",last_node:"private fixture name"}))};
+  assert.equal((await handle(req)).body.storage,"admissions");
+  const done=JSON.parse(fs.readFileSync(path.join(dir,"admissions/handler-41-record.done")));
+  assert.equal(done.inner_status,409);assert.equal(done.source_execution_id,"40");assert.equal(done.source_workflow_id,"reply");assert.equal(done.last_node,undefined);
+  assert.equal((await handle(req)).status,409);assert.equal(calls,1);
+  assert.equal((await handle({...req,execution:"42",raw:Buffer.from("{}")})).status,409);
+});
 test("inbound fences owner, role, exact envelope and duplicate executions",async t=>{
   const root=fs.mkdtempSync(path.join(os.tmpdir(),"inbound-"));t.after(()=>fs.rmSync(root,{recursive:true}));
   fs.mkdirSync(path.join(root,"admissions"));

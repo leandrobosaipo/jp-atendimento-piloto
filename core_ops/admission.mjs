@@ -78,6 +78,15 @@ export function operational({manifest,secrets,stateDir,inner,model,instance}){
       const fresh=read(leasePath);if(JSON.stringify(fresh)!==JSON.stringify(gate)||Date.now()>=Date.parse(fresh.until))return result(423,{error:"ownership_changed"});
       const out=route==="/ops/classify"?await model(body):await inner({route,workflow,execution,node,epoch:gate.epoch,raw});
       const o=out.body,receipt={workflow,execution,node,epoch:gate.epoch,stage,status:out.status,response_sha256:sha(JSON.stringify(o)),at:new Date().toISOString()};
+      // The reply lock can reject the legacy error recorder before it writes.
+      // Keep the source execution in the same durable journal as the stage.
+      if(role==="error"&&route==="/api/n8n/stages/record-error"&&out.status===409&&o?.error==="reply_operation_busy"&&
+          safe(body.source_workflow_id,/^[a-zA-Z0-9_-]{1,120}$/)&&
+          (body.source_execution_id===null||/^\d{1,20}$/.test(String(body.source_execution_id)))){
+        once(marker+".done",{...receipt,status:200,inner_status:409,storage:"admissions",source_workflow_id:body.source_workflow_id,
+          source_execution_id:body.source_execution_id===null?null:String(body.source_execution_id)});
+        return result(200,{ok:true,status:"recorded",storage:"admissions"});
+      }
       if(stage==="before-dispatch"){receipt.sync_ready=out.status===200&&o?.ready===true&&String(o.execution_id)===execution&&(!body.force||o.refreshed===true);receipt.job=o?.job_id||null;}
       if(stage==="reply-next"&&o?.has_task===true&&o?.needs_ai===true&&typeof o.task?.task_id==="string"&&typeof o.input?.message==="string")receipt.model_binding=sha(JSON.stringify([o.task.task_id,o.input.message]));
       once(marker+".done",receipt);
