@@ -145,19 +145,24 @@ def deliver(queue, db, read, execution):
     with db:
         caught_up=index_team_events(queue,db,read,cfg)
         if not caught_up:return {'processed':0,'index_catching_up':True}
-        pending=db.execute("""SELECT c.rowid,c.* FROM captured c LEFT JOIN core_links l ON c.rowid=l.capture
-          WHERE l.capture IS NULL OR (l.status='awaiting_official' AND l.checked<?)
-          ORDER BY (l.capture IS NOT NULL),c.seq,c.rowid LIMIT 3""",(int(time.time())-600,))
-        cols=[d[0] for d in pending.description];rows=[dict(zip(cols,r)) for r in pending.fetchall()]
-        if not rows: call('check')
         with sqlite3.connect(LEDGER.as_uri()+'?mode=ro',uri=True) as ledger:
             valid=ledger.execute("""SELECT native,destination,attempted,state FROM dispatch_attempts WHERE
                 state IN ('accepted','delivered','read') AND native IS NOT NULL AND attempted>=?""",(int(time.time())-9*86400,)).fetchall()
             cfg['delivered']=set(cfg['delivered'])|{mid for mid,_,_,status in valid if status in ('delivered','read')}
             outbound=[(mid,cap.digest(jid),stamp) for mid,jid,stamp,_ in valid]
+            from visit_question_capture import update
+            update(ROOT,CONF,ledger,db,queue,read,cfg)
+        pending=db.execute("""SELECT c.rowid,c.* FROM captured c LEFT JOIN core_links l ON c.rowid=l.capture
+          WHERE l.capture IS NULL OR (l.status='awaiting_official' AND l.checked<?)
+          ORDER BY (l.capture IS NOT NULL),c.seq,c.rowid LIMIT 3""",(int(time.time())-600,))
+        cols=[d[0] for d in pending.description];rows=[dict(zip(cols,r)) for r in pending.fetchall()]
+        if not rows: call('check')
         outcomes={}
         for row in rows:
             event=make_event(row,read,cfg,outbound)
+            question=cfg.get('questionAnswers',{}).get(event['mid'])
+            if question and question[0]==event['latestDelivered'] and event['disposition'] in ('group_all','group_'+str(question[1])):
+                event['disposition']='possible_confirmation'
             notices=[r[2] for r in outbound if r[0] in event['delivered']]
             if notices:
                 latest=db.execute('SELECT mid FROM team_events WHERE pn=? AND stamp>=?',(event['pn'],min(notices)))

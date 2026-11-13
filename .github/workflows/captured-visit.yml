@@ -1,7 +1,7 @@
 name: Captura de respostas da agenda JP
 on:
   push:
-    branches: ['codex/jp-associacao-respostas-dell','codex/jp-confirmacao-oficial-dell']
+    branches: ['codex/jp-associacao-respostas-dell','codex/jp-confirmacao-oficial-dell','codex/jp-esclarecer-visita']
 permissions:
   contents: read
 jobs:
@@ -22,3 +22,4 @@ jobs:
           python3 -B -m unittest discover -s core_ops -p 'test_*reschedule*.py'
           python3 core_ops/test_capture_link_schema.py
           node core_ops/test_confirmed_visit_return.mjs
+          node core_ops/test_visit_questions.mjs

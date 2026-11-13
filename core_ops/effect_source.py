@@ -36,7 +36,12 @@ def standing_current(g):
         rows=db.execute('SELECT rowid,seq,content_sha256,address_hashes,disposition FROM captured WHERE message_id=?',(g['message_id'],)).fetchall()
         need(len(rows)==1)
         rid,seq,fp,aliases,disposition=rows[0]
-        need(seq==g['capture_sequence'] and fp==g['fingerprint'] and disposition=='possible_confirmation')
+        need(seq==g['capture_sequence'] and fp==g['fingerprint'])
+        if disposition!='possible_confirmation':
+            obs=secure(ROOT/'ops-config/read-grants/visit-questions-observed.json')
+            cases=secure(ROOT/'ops-config/visit-questions.json')['cases']
+            case,=[p for p in cases if p['person']==person and any(c['appointment_id']==g['reference'] and c['client_code']==g['client'] for c in p['members'])]
+            need(0<=time.time()-obs['at']/1000<75 and disposition in ('group_all','group_'+str(len(case['members']))) and any(o['case']==case['case'] and o.get('native')==g['notice'] and o.get('answer')==g['message_id'] for o in obs['rows']))
         need(db.execute('SELECT status FROM core_links WHERE capture=?',(rid,)).fetchone()==('awaiting_official',))
         aliases=set(json.loads(aliases))
         need(not any(aliases.intersection(json.loads(raw)) for raw, in db.execute('SELECT address_hashes FROM captured WHERE seq>? OR (seq=? AND rowid>?)',(seq,seq,rid))))

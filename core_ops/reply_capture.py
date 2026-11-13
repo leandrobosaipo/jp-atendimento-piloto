@@ -65,6 +65,11 @@ def intent(text):
     t = unicodedata.normalize("NFC", text).casefold().replace("\ufe0f", "").strip()
     t = "".join(c for c in t if not 0x1f3fb <= ord(c) <= 0x1f3ff)
     t = " ".join(t.split()).rstrip(".! ")
+    if t in {"confirmo todos","sim, confirmo todos","confirmo todos os serviços","todos","pode confirmar todos","sim, todos"}:
+        return "group_all"
+    for count,word in [(2,"dois"),(3,"três")]:
+        if t in {"os "+word,"confirmo os "+word,"sim, os "+word}:
+            return "group_"+str(count)
     return "possible_confirmation" if t in {
         "👍", "✅", "sim", "ok", "confirmo", "confirmado", "confirmada",
         "sim, confirmo", "sim, confirmado", "confirmo sim", "confirmo minha presença",

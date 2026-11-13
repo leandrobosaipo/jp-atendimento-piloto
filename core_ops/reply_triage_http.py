@@ -12,6 +12,8 @@ import sqlite3
 import struct
 import subprocess
 import sys
+from datetime import datetime
+from zoneinfo import ZoneInfo
 
 import reply_triage
 
@@ -20,17 +22,51 @@ DB = Path("/var/lib/jp-reply-capture/replies.sqlite3")
 TEAM = Path("/etc/atendimento-piloto-customer-ingress/team-service.json")
 
 
+def _context(case: reply_triage.Case) -> dict:
+    """Read only a bound reply for the restricted team inbox."""
+    program = r'''import fs from 'node:fs';import crypto from 'node:crypto';import {decodeStateEnvelope} from '/legacy/scripts/jp-state-envelope.mjs';
+const q=JSON.parse(fs.readFileSync(0));
+const cfg=JSON.parse(fs.readFileSync('/config/runtime.json'));
+const state=JSON.parse(decodeStateEnvelope(JSON.parse(fs.readFileSync('/state/state.json')),Buffer.from(cfg.stateKey,'hex')));
+const key=crypto.createHash('sha256').update(JSON.stringify([q.mid,q.fp])).digest('hex');
+const link=state.dell_reply_links?.[key];
+const result={visits:[],received:''};
+if(link?.key===key && link.mid===q.mid){
+ const document=JSON.parse(fs.readFileSync(process.env.JP_APPROVAL_CANDIDATES_FILE||'/state/candidates.json'));
+ const candidates=document.candidates||[];
+ for(const id of link.appointments||[]){
+   const matches=candidates.filter(c=>String(c.appointment_id)===String(id));
+   const v=matches.length===1 && matches[0];
+   if(v) result.visits.push({name:v.name||v.first_name,date:v.appointment_date,time:v.appointment_time,service:v.service});
+ }
+ const messages=(state.messages||[]).filter(m=>m.instance===cfg.instance && m.source==='dell_capture' &&
+   m.message_id===q.mid && m.direction==='inbound' && link.appointments?.includes(m.appointment_id));
+ if(messages.length===1) result.received=String(messages[0].text||'').slice(0,500);
+}
+console.log(JSON.stringify(result));'''
+    value = subprocess.check_output(
+        ["docker", "exec", "-i", "jp-core-operacional", "node", "--input-type=module", "-e", program],
+        input=json.dumps({"mid": case.message_id, "fp": case.fingerprint}), text=True, timeout=20,
+    )
+    data = json.loads(value)
+    return data
+
+
 def _chatwoot(case: reply_triage.Case) -> tuple[int, int]:
     """Create/re-read only an internal API-channel note; never a public message."""
     config = json.loads(TEAM.read_bytes())
     if config.get("account") != 2 or config.get("inbox") != 3:
         raise RuntimeError("unexpected_team_inbox")
+    context = _context(case)
+    when = datetime.fromisoformat(case.received_at.replace("Z", "+00:00")).astimezone(ZoneInfo("America/Cuiaba"))
+    note = reply_triage.render_note(case.status, case.kind, case.disposition, case.marker, context["visits"],
+                                    received=context["received"], when=when.strftime("%d/%m às %H:%M"))
     payload = {
         "account": 2,
         "inbox": 3,
         "marker": case.marker,
         "origin": case.origin_hash,
-        "note": case.note,
+        "note": note,
         "source": "jp-reply-triage/" + str(case.capture),
     }
     ruby = r'''
@@ -48,7 +84,7 @@ r=ActiveRecord::Base.transaction do
  ref='jp-reply-triage/'+p.fetch('marker')
  m=v.messages.find_by(source_id:ref)
  if m
-  raise 'note_mismatch' unless m.private? && m.content==p.fetch('note')
+  raise 'note_mismatch' unless m.private? && m.content.include?(p.fetch('marker'))
  else
   m=v.messages.create!(account:a,inbox:i,private:true,message_type: :outgoing,content:p.fetch('note'),source_id:ref)
  end
@@ -73,6 +109,41 @@ puts 'RECEIPT='+JSON.generate(r)
     return int(receipt["conversation"]), int(receipt["note"])
 
 
+def reflect_questions(db):
+    path=Path('/var/lib/jp-migracao-revisao/core-operacional/ops-config/read-grants/visit-questions-observed.json')
+    if not path.is_file():
+        return
+    db.execute("create table if not exists question_team_notes(ticket integer,stage text, primary key(ticket,stage))")
+    texts={'attempted':'O Dell registrou a tentativa de perguntar se todos os serviços estão confirmados. Aguardando recibo ou resposta.',
+           'native':'O WhatsApp registrou a entrega da pergunta ao destino da visita.',
+           'responded':'Chegou resposta à pergunta. Confira a agenda e o retorno do Dell antes de encerrar o caso.',
+           'completed':'Todos os serviços foram conferidos como confirmados no AppBarber e o WhatsApp registrou a entrega do retorno ao cliente.'}
+    stages=[]
+    for row in json.loads(path.read_bytes())['rows']:
+        for key,text in texts.items():
+            if row.get(key) and (row['case'] in (3,4)) and not db.execute('select 1 from question_team_notes where ticket=? and stage=?',(row['case'],key)).fetchone():
+                stages.append(dict(ticket=row['case'],stage=key,text=text))
+    if not stages:return
+    ruby=r"""
+require 'json'
+a=Account.find(2);i=a.inboxes.find(3)
+raise unless i.channel.is_a?(Channel::Api) && i.channel.webhook_url.blank? && a.webhooks.empty?
+ActiveRecord::Base.transaction do
+ JSON.parse(STDIN.read).each do |p|
+  v=a.conversations.lock.find_by!(inbox:i,display_id:p['ticket'])
+  raise unless v.messages.where(id: {3=>468,4=>469}.fetch(p['ticket']),private:true).exists?
+  ref="jp-question/#{p['ticket']}/#{p['stage']}"
+  m=v.messages.find_by(source_id:ref)||v.messages.create!(account:a,inbox:i,private:true,message_type: :outgoing,source_id:ref,content:p['text'])
+  raise unless m.reload.private? && m.content==p['text']
+  v.update!(status: :resolved) if p['stage']=='completed' && v.open? && !v.messages.where('id > ?', {3=>468,4=>469}.fetch(p['ticket'])).where("coalesce(source_id,'') NOT LIKE 'jp-question/%'").exists?
+ end
+end
+"""
+    proc=subprocess.run(['docker','exec','-i','atendimento-piloto-chat-1','bundle','exec','rails','runner',ruby],input=json.dumps(stages),text=True,capture_output=True,timeout=50)
+    if proc.returncode:raise RuntimeError('private_question_note_failed')
+    db.executemany('insert or ignore into question_team_notes values(?,?)',[(r['ticket'],r['stage']) for r in stages])
+
+
 class Handler(http.server.BaseHTTPRequestHandler):
     def log_message(self, *_args):
         pass
@@ -89,6 +160,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
             with sqlite3.connect(DB, timeout=8) as db:
                 db.row_factory = sqlite3.Row
                 result = reply_triage.run_tick(db, _chatwoot, limit=3)
+                reflect_questions(db)
             body = json.dumps({"processed": result["created"]}).encode()
             self.send_response(200)
             self.send_header("Content-Type", "application/json")

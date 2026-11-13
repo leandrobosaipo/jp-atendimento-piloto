@@ -2,11 +2,14 @@ import http from 'node:http';
 import fs from 'node:fs';
 import {createHash, timingSafeEqual} from 'node:crypto';
 import {confirmedVisitReturn} from './confirmed_visit_return.mjs';
+import {answeredQuestion, proofMatches} from './visit_questions.mjs';
 
 const digest = value => createHash('sha256').update(value).digest('hex');
 const hashPattern = /^[a-f0-9]{64}$/;
 
 export function matchVisit(event, state, helpers) {
+  const answer=answeredQuestion(event,state,helpers);
+  if(answer)return answer;
   const dispatches = state.individual_dispatches || [];
   const byDestination = dispatches.filter(d => {
     if (!d.destination_e164 || !d.message_id) return false;
@@ -42,7 +45,8 @@ export async function consumeVisit(event, h, preview=false) {
   const key = digest(JSON.stringify([event.mid,event.content]));
   let state=h.load();
   let receipt=state.dell_reply_links?.[key];
-  const retry=receipt?.status==='awaiting_official';
+  const rebound=receipt && ['human_hold','human_review','visit_review','identity_review'].includes(receipt.status) && answeredQuestion(event,state,h) && event.disposition==='possible_confirmation';
+  const retry=receipt?.status==='awaiting_official'||!!rebound;
   if(!preview && event.latestDelivered){
     const followup=await confirmedVisitReturn(event,h);
     if(followup)return followup;
@@ -70,14 +74,14 @@ export async function consumeVisit(event, h, preview=false) {
     const check=matchVisit(event,state,h);
     const same=check.status==='matched' && check.dispatch.message_id===notice && JSON.stringify(check.members.map(h.snapshot))===JSON.stringify(target.members.map(h.snapshot));
     if(!same) status='human_review';
-    else if(proofs.length===appointments.length && proofs.every((p,i)=>p.confirmed===true && p.status==='1' && p.appointment_id===appointments[i])) status='official_confirmed';
+    else if(proofs.length===appointments.length && proofs.every((p,i)=>p.confirmed===true && p.status==='1' && p.appointment_id===appointments[i] && (!target.case||proofMatches(target.members[i],p)))) status='official_confirmed';
     else status='awaiting_official';
     target=check;
   }
   if(preview)return {status,noticeLinked:!!notice,members:appointments.length,kind:event.kind};
   const seen=state.dell_reply_links||={};
   if (seen[key] && !retry) return {status:seen[key].status,members:seen[key].appointments.length,duplicate:true};
-  if (retry && (!notice || notice!==receipt.notice || JSON.stringify(appointments)!==JSON.stringify(receipt.appointments))) status='human_review';
+  if (retry && !rebound && (!notice || notice!==receipt.notice || JSON.stringify(appointments)!==JSON.stringify(receipt.appointments))) status='human_review';
   const previous=Object.values(seen).filter(v=>notice && v.notice===notice && v.key!==key);
   if (previous.some(v=>v.status==='human_review'||v.status==='human_hold'||Date.parse(v.at)>Date.parse(event.at)))status='human_review';
   const human=['human_hold','human_review'].includes(status);
@@ -114,6 +118,7 @@ export async function consumeVisit(event, h, preview=false) {
           state.jp_responses.push(r);
         }
         r.intent=human?'human_review':intent;
+        if(rebound)r.outbound_message_id=notice;
         r.official_update=status==='official_confirmed'?{status:'confirmed',readback:proofs[index],write_performed:false}:{status:'pending',write_performed:false};
       }
     }
