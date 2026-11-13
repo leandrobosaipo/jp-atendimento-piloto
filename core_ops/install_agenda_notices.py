@@ -28,4 +28,14 @@ def patched(text):
   if(Object.values(state.dell_reply_links||{}).some(r=>r.mid!==clarified?.original&&r.appointments.includes(candidate.appointment_id)&&['human_hold','human_review','awaiting_official'].includes(r.status)))""")
     once("if(!sameDestination(record.destination_e164,candidate.destination_e164)||!dispatches.some(d=>d.message_id===record.outbound_message_id&&sameDestination(d.destination_e164,candidate.destination_e164)))", """const sourceNotice=clarificationFor(state,record,id)?.notice||record.outbound_message_id;
   if(!sameDestination(record.destination_e164,candidate.destination_e164)||!dispatches.some(d=>d.message_id===sourceNotice&&sameDestination(d.destination_e164,candidate.destination_e164)))""")
+    once("function visitFeedback(candidate,state){return visitFeedbackFor(candidate,state,instance,{isCurrent:(c,d)=>currentAppointmentAttempt(state,c,d)});}", """function visitFeedback(candidate,state){
+  const project=s=>visitFeedbackFor(candidate,s,instance,{isCurrent:(c,d)=>currentAppointmentAttempt(state,c,d)});
+  const original=project(state);
+  if(!original?.reminder_hold||!candidate)return original;
+  const resolved=clarificationFor(state,responseRecord(state,candidate.appointment_id),candidate.appointment_id);
+  if(!resolved||!original.source_message_ids?.includes(resolved.original))return original;
+  // Project the verified answer against the original notice. Preserve every other response.
+  const responses=state.jp_responses.filter(r=>!(r.message_id===resolved.original&&r.outbound_message_id===resolved.notice&&resolved.ids.includes(r.appointment_id))).map(r=>r.message_id===resolved.answer&&r.outbound_message_id===resolved.question&&resolved.ids.includes(r.appointment_id)?{...r,outbound_message_id:resolved.notice}:r);
+  return project({...state,jp_responses:responses});
+}""")
     return text
