@@ -23,6 +23,7 @@ try {
   const end = runtime.indexOf('\nfunction delaySupportConfig()', start);
   if (start < 0 || end < 0) throw Error('reminder_gate_not_found');
   const context = {
+    clarificationFor: () => null,
     supportCaseFor: (state, id) => state.support?.has(id) ? { appointment_id: id } : null,
     visitFeedback: (candidate, state) => state.holds?.has(candidate.appointment_id) ? { reminder_hold: true } : null,
     responseRecord: (state, id) => state.responses?.get(id) || null,

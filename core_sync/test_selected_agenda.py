@@ -1,7 +1,20 @@
 import unittest,datetime as dt
-from source import AGENDA,HISTORY,CALENDAR,check_pending,selected_read,selected_calendar
+from source import AGENDA,HISTORY,CALENDAR,check_pending,selected_read,selected_calendar,clock_query
 
 class Selected(unittest.TestCase):
+    def test_clock_reads_only_visit_day_client_and_history(self):
+        day=dt.date(2026,11,13)
+        m=dict(id='1',client='2',service='3',pro='4',day='14/11/2026',time='08:00')
+        query=dict(profissional='4',servico='3',cliente='2',dataini=m['day'],datafim=m['day'],tipo='1')
+        self.assertTrue(clock_query(AGENDA,query,m,day,{'4'}))
+        self.assertTrue(clock_query(AGENDA,dict(query,profissional='',servico=''),m,day,{'4'}))
+        self.assertFalse(clock_query(AGENDA,dict(query,cliente='5'),m,day,{'4'}))
+        self.assertFalse(clock_query(AGENDA,dict(query,datafim='15/11/2026'),m,day,{'4'}))
+        self.assertFalse(clock_query(AGENDA,query,m,day,{'5'}))
+        self.assertFalse(clock_query(AGENDA,query,m,day+dt.timedelta(days=2),{'4'}))
+        hist=dict(edtDataIni=(day-dt.timedelta(days=364)).strftime('%d/%m/%Y'),edtDataFim=day.strftime('%d/%m/%Y'),tipoStatus='2',AgeCliente='2',AgeProfissional='',AgeServico='')
+        self.assertTrue(clock_query(HISTORY,hist,m,day,{'4'}))
+        self.assertFalse(clock_query(HISTORY,dict(hist,AgeCliente=''),m,day,{'4'}))
     def test_exact_identity_date_and_current_status(self):
         day=dt.date(2026,11,11)
         m=dict(id='11',date='2026-11-12',time='09:00',pro='1',service='7',client='3')

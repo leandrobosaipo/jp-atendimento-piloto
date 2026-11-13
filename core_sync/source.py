@@ -87,6 +87,20 @@ class NoRedirect(urllib.request.HTTPRedirectHandler):
     def redirect_request(self,*args):
         return None
 
+def clock_query(path, params, member, today, professionals):
+    if set(member)!={'id','client','pro','service','day','time'} or member['pro'] not in professionals:
+        return False
+    if not all(re.fullmatch(r'[0-9]{1,18}',member[k]) for k in ('id','client','pro','service')):
+        return False
+    day=dt.datetime.strptime(member['day'],'%d/%m/%Y').date()
+    if not today<=day<=today+dt.timedelta(days=13) or not re.fullmatch(r'(?:[01]\d|2[0-3]):[0-5]\d',member['time']):
+        return False
+    if path==AGENDA:
+        base=dict(cliente=member['client'],dataini=member['day'],datafim=member['day'],tipo='1')
+        return params in (dict(base,profissional=member['pro'],servico=member['service']),dict(base,profissional='',servico=''))
+    return path==HISTORY and params==dict(edtDataIni=(today-dt.timedelta(days=364)).strftime('%d/%m/%Y'),
+        edtDataFim=today.strftime('%d/%m/%Y'),tipoStatus='2',AgeCliente=member['client'],AgeProfissional='',AgeServico='')
+
 class Source(http.server.BaseHTTPRequestHandler):
     def log_message(self,*args):
         pass
@@ -105,7 +119,11 @@ class Source(http.server.BaseHTTPRequestHandler):
             professionals={v['id'] for v in cfg['professionals'].values()}
             members=None
             exact = body.get('captureVisit')
-            if exact is not None:
+            clock = body.get('clockVisit')
+            if clock is not None:
+                if exact is not None or not hmac.compare_digest((self.server.reader.parent/'reply-ingress').read_text().strip(),self.headers.get('X-JP-Visit-Read','')) or not clock_query(path,params,clock,today,professionals):
+                    raise ValueError('invalid notice read')
+            elif exact is not None:
                 token = (self.server.reader.parent/'reply-ingress').read_text().strip()
                 if not hmac.compare_digest(token,self.headers.get('X-JP-Visit-Read','')) or path!=CALENDAR:
                     raise ValueError('unauthorized visit read')
