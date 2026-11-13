@@ -13,6 +13,11 @@ def digest(value):
     return hashlib.sha256(json.dumps(value, ensure_ascii=False, separators=(',', ':'), sort_keys=True).encode()).hexdigest()
 
 
+def addressed_yes(text):
+    import re
+    return isinstance(text,str) and bool(re.fullmatch(r'sim\s*,?\s+marcelinho[.!]*',text.strip(),re.IGNORECASE))
+
+
 def update(root, conf, ledger, db, queue, read, cfg):
     file=root/'ops-config/visit-questions.json'
     if not file.is_file():
@@ -65,6 +70,18 @@ def update(root, conf, ledger, db, queue, read, cfg):
                 if len(inbound)==1 and len(xs)==1 and all(mid==q['native'] for mid, in team):
                     out['answer']=inbound[0][0]
                     cfg.setdefault('questionAnswers',{})[out['answer']]=(q['native'],len(p['members']))
+                    row=db.execute('select record_id,envelope_pos,item_pos,content_sha256,disposition from captured where message_id=?',(out['answer'],)).fetchall()
+                    if len(row)==1 and row[0][4]=='review':
+                        from capture_link import identity
+                        from reply_capture import classify,INSTANCE
+                        rid,ei,di,fp,_=row[0]
+                        _,raw=read(rid)
+                        e=(raw if isinstance(raw,list) else [raw])[ei]
+                        batch=e['data'];msg=(batch if isinstance(batch,list) else [batch])[di]
+                        kind,_,quote,text=classify(msg.get('message') or {})
+                        if e.get('instance')==INSTANCE and msg['key'].get('fromMe') is False and msg['key'].get('id')==out['answer'] and identity(msg,cfg['pairs'])==p['person'] and kind=='text' and (not quote or quote==q['native']) and addressed_yes(text):
+                            out['addressedYes']=fp
+                            cfg.setdefault('addressedYes',{})[out['answer']]=fp
                 if inbound:
                     out['responded']=True
                 if len(inbound)>=1 and len(xs)>=2:
@@ -78,7 +95,8 @@ def update(root, conf, ledger, db, queue, read, cfg):
             o['untouched']=False
             o.pop('answer',None)
     for o in rows:
-        if o.get('answer') and o.get('answer')!=next((x.get('answer') for x in previous.get('rows',[]) if x['case']==o['case']),None):
+        prior=next((x for x in previous.get('rows',[]) if x['case']==o['case']),{})
+        if o.get('answer') and (o['answer']!=prior.get('answer') or o.get('addressedYes')!=prior.get('addressedYes')):
             # A verified receipt can arrive one tick later than its response.
             db.execute("""delete from core_links where status in ('human_review','human_hold','visit_review','identity_review')
                           and capture in (select rowid from captured where message_id=?)""",(o['answer'],))

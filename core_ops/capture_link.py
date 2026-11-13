@@ -161,7 +161,8 @@ def deliver(queue, db, read, execution):
         for row in rows:
             event=make_event(row,read,cfg,outbound)
             question=cfg.get('questionAnswers',{}).get(event['mid'])
-            if question and question[0]==event['latestDelivered'] and event['disposition'] in ('group_all','group_'+str(question[1])):
+            addressed=cfg.get('addressedYes',{}).get(event['mid'])==event['content'] and event['disposition']=='review'
+            if question and question[0]==event['latestDelivered'] and (addressed or event['disposition'] in ('group_all','group_'+str(question[1]))):
                 event['disposition']='possible_confirmation'
             notices=[r[2] for r in outbound if r[0] in event['delivered']]
             if notices:
