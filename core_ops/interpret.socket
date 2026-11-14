@@ -1,0 +1,9 @@
+[Unit]
+Description=Restricted intent classification socket
+[Socket]
+ListenStream=/var/lib/jp-migracao-revisao/core-model/interpret.sock
+ExecStartPost=/usr/bin/chown 64681:64681 /var/lib/jp-migracao-revisao/core-model/interpret.sock
+SocketMode=0600
+RemoveOnStop=yes
+[Install]
+WantedBy=sockets.target

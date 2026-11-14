@@ -1,0 +1,16 @@
+name: Core operational contracts
+on:
+  push:
+    branches: ['codex/jp-runtime-operacional-dell']
+permissions: {contents: read}
+jobs:
+  contracts:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+      - run: |
+          python3 -m compileall -q core_ops
+          python3 core_ops/test_classifier.py
+          python3 core_ops/test_observer.py
+          for source in core_ops/*.mjs; do node --check "$source"; done
+          node --test core_ops/test_ops.mjs
