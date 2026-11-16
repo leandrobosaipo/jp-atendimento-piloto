@@ -130,8 +130,31 @@ def original_context(case):
     return '\nMensagem recebida na conversa de origem: «'+text[:500]+'». Esta nota é interna. Confira a conversa original antes de responder.'
 
 
+def observe_renewal(db,root=Path('/var/lib/jp-migracao-revisao/core-operacional'),now=None):
+    """Observe the existing n8n renewal intent, never call AppBarber or submit a login."""
+    directory=root/'state/renewal-intents'
+    if not directory.is_dir():return
+    import time
+    now=int(time.time()) if now is None else now
+    # Ignore completed history older than the session installed by the official verifier.
+    replaced=int((root/'config/session.json').stat().st_mtime)
+    db.execute("CREATE TABLE IF NOT EXISTS observed_renewal(job TEXT PRIMARY KEY,started INTEGER,execution TEXT,closed INTEGER DEFAULT 0)")
+    for row in db.execute("SELECT job,started,execution FROM observed_renewal WHERE closed=0").fetchall():
+        if replaced>row[1]:
+            db.execute("INSERT OR IGNORE INTO capture_incidents(start,kind,execution,stamp) VALUES(?,'agenda_reler',?,?)",(row[1],row[2],now))
+            db.execute('UPDATE observed_renewal SET closed=1 WHERE job=?',(row[0],))
+    for file in directory.glob('*.json'):
+        ts=int(file.stat().st_mtime)
+        if ts<replaced or now-ts<180 or db.execute('SELECT 1 FROM observed_renewal WHERE job=?',(file.stem,)).fetchone():continue
+        item=json.loads(file.read_bytes());execution=str(item.get('execution',''))
+        if item.get('job')!=file.stem or not execution.isdigit() or len(execution)>20:continue
+        db.execute('INSERT INTO observed_renewal(job,started,execution) VALUES(?,?,?)',(file.stem,ts,execution))
+        db.execute("INSERT OR IGNORE INTO capture_incidents(start,kind,execution,stamp) VALUES(?,'agenda_acesso',?,?)",(ts,execution,now))
+
+
 def reflect_health(db):
     if not db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='capture_incidents'").fetchone():return
+    with db:observe_renewal(db)
     rows=[dict(r) for r in db.execute('SELECT start,kind,execution,stamp FROM capture_incidents WHERE noted=0 ORDER BY rowid LIMIT 4')]
     if not rows:return
     ruby="""require 'json'
@@ -148,13 +171,15 @@ ActiveRecord::Base.transaction do
   key='jp-dell/captura/'+r['start'].to_s+'/'+r['kind']
   m=v.messages.find_by(source_id:key)||v.messages.create!(account:a,inbox:i,private:true,message_type: :outgoing,source_id:key,content:r['text'])
   raise unless m.reload.private? && m.content==r['text']
-  v.open! if v.resolved? && r['kind']=='interrompido'
+  v.open! if v.resolved? && ['interrompido','agenda_acesso'].include?(r['kind'])
  end
 end"""
     for row in rows:
         when=datetime.fromtimestamp(row['stamp'],ZoneInfo('America/Cuiaba')).strftime('%d/%m %H:%M')
         what={'interrompido':'Passaram ao menos três minutos sem um ciclo de captura e associação saudável. Confira o n8n e o núcleo do Dell. Preserve as entradas e não reenvie avisos.',
-              'retomado':'A captura e a associação voltaram a concluir um ciclo. Confira as entradas acumuladas; este registro não comprova resposta nem entrega.'}[row['kind']]
+              'retomado':'A captura e a associação voltaram a concluir um ciclo. Confira as entradas acumuladas; este registro não comprova resposta nem entrega.',
+              'agenda_acesso':'O n8n pediu renovação do AppBarber e o arquivo da sessão não foi atualizado em três minutos. Conferir o job de acesso antes da próxima janela. Não repetir login nem assumir que a agenda está vazia.',
+              'agenda_reler':'A sessão da agenda foi atualizada depois do pedido do n8n. Conferir a leitura oficial na próxima execução antes de liberar avisos.'}[row['kind']]
         row['text']=when+' (Cuiabá) · '+what+' Execução n8n '+row['execution']+'.'
     proc=subprocess.run(['docker','exec','-i','atendimento-piloto-chat-1','bundle','exec','rails','runner',ruby],input=json.dumps(rows),text=True,capture_output=True,timeout=45)
     if proc.returncode:raise RuntimeError('private_health_note_failed')
