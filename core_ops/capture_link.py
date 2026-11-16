@@ -175,4 +175,7 @@ def deliver(queue, db, read, execution):
             status=result['status'];outcomes[status]=outcomes.get(status,0)+1
             db.execute('INSERT OR REPLACE INTO core_links VALUES(?,?,?,?,?)',(row['rowid'],status,result['members'],int(time.time()),execution))
         issued=issue_ready_reschedules(db,read,cfg,outbound)
+        from public_requests import publish
+        with sqlite3.connect(LEDGER.as_uri()+'?mode=ro',uri=True) as ledger:
+            publish(ROOT,CONF,db,queue,ledger,read,execution)
     return {'processed':len(rows),'outcomes':outcomes,'reschedule_grants':issued}

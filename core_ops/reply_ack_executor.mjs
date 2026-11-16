@@ -1,4 +1,5 @@
 import fs from 'node:fs';
+import {answerRequest} from './public_requests.mjs';
 import {createHash} from 'node:crypto';
 import {projectOfficialAcknowledgements} from './captured_visit.mjs';
 import {askOne, questions} from './visit_questions.mjs';
@@ -64,6 +65,8 @@ export async function executeAcknowledgements(h, cutoff, fetchImpl=fetch) {
   if(!Number.isFinite(Date.parse(cutoff))) throw Error('ack_cutoff_required');
   const clarification=await askOne(h,fetchImpl);
   if(clarification)return clarification;
+  const publicAnswer=await answerRequest(h,fetchImpl);
+  if(publicAnswer)return publicAnswer;
   let state=h.load();
   const projected=projectOfficialAcknowledgements(state,cutoff), exceptionCreated=projectAuthorizedException(state);
   if(projected.created||exceptionCreated){state.version=(state.version||0)+1;h.save(state);}

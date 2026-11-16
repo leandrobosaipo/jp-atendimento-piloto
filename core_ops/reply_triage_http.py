@@ -226,6 +226,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
         pass
 
     def do_POST(self):
+        if self.path.startswith('/ownership/'):
+            return self.ownership(self.path[11:])
         if self.path != "/tick" or self.headers.get("Content-Length", "0") not in {"0", ""}:
             self.send_error(403)
             return
@@ -248,6 +250,27 @@ class Handler(http.server.BaseHTTPRequestHandler):
         except Exception as error:
             print("triage held", type(error).__name__, file=sys.stderr, flush=True)
             self.send_error(503)
+
+    def ownership(self,seq):
+        import re
+        peer=self.connection.getsockopt(socket.SOL_SOCKET,socket.SO_PEERCRED,12)
+        if not re.fullmatch(r'[0-9]{1,12}',seq) or struct.unpack('3i',peer)[1]!=0:
+            return self.send_error(403)
+        with sqlite3.connect(DB.as_uri()+'?mode=ro',uri=True) as db:
+            entry=db.execute('SELECT t.conversation,c.received_at FROM captured c JOIN triage_cases t ON t.capture=c.rowid WHERE c.seq=?',(int(seq),)).fetchall()
+        allowed=False
+        if len(entry)==1:
+            ticket,at=entry[0]
+            stamp=int(datetime.fromisoformat(at.replace('Z','+00:00')).timestamp())
+            sql=f"""SELECT count(*) FROM conversations v JOIN inboxes i ON i.id=v.inbox_id
+               WHERE v.account_id=2 AND v.inbox_id=3 AND i.channel_type='Channel::Api' AND v.display_id={int(ticket)}
+               AND v.status=0 AND v.assignee_id IS NULL AND NOT EXISTS
+               (SELECT 1 FROM messages m WHERE m.conversation_id=v.id AND m.created_at>=to_timestamp({stamp})
+               AND (m.private=false OR m.sender_type='User'))"""
+            proc=subprocess.run(['docker','exec','atendimento-piloto-postgres-1','psql','-XAt','-v','ON_ERROR_STOP=1','-U','postgres','-d','chat','-c',sql],capture_output=True,text=True,timeout=4)
+            allowed=proc.returncode==0 and proc.stdout.strip()=='1'
+        payload=json.dumps({'available':allowed}).encode()
+        self.send_response(200);self.send_header('Content-Length',str(len(payload)));self.end_headers();self.wfile.write(payload)
 
 
 if __name__ == "__main__":

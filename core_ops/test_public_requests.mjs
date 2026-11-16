@@ -1,0 +1,18 @@
+import assert from 'node:assert/strict';
+import {createHash} from 'node:crypto';
+import {answerRequest,nextRequest} from './public_requests.mjs';
+const row={seq:500,number:'5511999990000',mid:'fake',fp:'abc',record:'r',answer:'Qual dia você prefere?'};
+const key=createHash('sha256').update(JSON.stringify([row.mid,row.fp])).digest('hex');
+const state={version:1,dell_reply_links:{[key]:{mid:row.mid,record:'r',status:'identity_review',appointments:[]}},jp_reply_tasks:[]};
+const h={load:()=>structuredClone(state),save:x=>Object.assign(state,x),blocked:()=>false,instance:'fixture'};
+const read=()=>({at:Date.now()/1000,items:[row]});
+state.jp_reply_tasks.push({status:'human',destination_e164:'+'+row.number});
+assert.equal(nextRequest(h,read),null);
+state.jp_reply_tasks=[];
+assert.equal(nextRequest(h,read).seq,500);
+assert.equal(nextRequest(h,()=>({at:1,items:[row]})),null);
+let calls=0;
+const send=async()=>{calls++;assert.equal(state.jp_reply_attempts[0].status,'delivery_unknown');throw Error('timeout');};
+assert.equal((await answerRequest(h,send,read)).status,'delivery_unknown');
+assert.equal(await answerRequest(h,send,read),null);
+assert.equal(calls,1);

@@ -12,6 +12,8 @@ jobs:
       - run: |
           python3 -m compileall -q core_ops core_sync
           python3 core_ops/test_reply_capture.py
+          PYTHONPATH=integration:core_ops python3 core_ops/test_public_requests.py
+          node core_ops/test_public_requests.mjs
           python3 core_sync/test_selected_agenda.py
           python3 core_sync/test_source.py
           node core_ops/test_captured_visit.mjs

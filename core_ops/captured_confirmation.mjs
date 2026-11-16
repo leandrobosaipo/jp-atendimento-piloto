@@ -1,4 +1,5 @@
 import fs from 'node:fs';
+import {nextRequest} from './public_requests.mjs';
 import {matchVisit, consumeVisit} from './captured_visit.mjs';
 import {approval, guardedPost, keyOf} from './effect_guard.mjs';
 import {reschedulePolicyEligible} from './captured_same_day_reschedule.mjs';
@@ -38,7 +39,7 @@ export function pendingCapturedWork(h,cutoff){
   if(state.dispatch_sync?.status==='failed' &&
       awaitingSessionRecovery(state,Date.now(),fs.statSync('/config/session.json').mtimeMs))return false;
   const file='/ops-config/authorized-visit-feedback.json';
-  if(questionPending(h))return true;
+  if(questionPending(h)||nextRequest(h))return true;
   if(fs.existsSync(file)){
     const permit=JSON.parse(fs.readFileSync(file));
     const link=state.dell_reply_links?.[permit.link_key];
