@@ -13,6 +13,7 @@ import time
 
 import reply_capture as capture
 import capture_link
+from capture_health import observe
 
 sys.path.insert(0, "/opt/jp-dispatch/current")
 from dispatch_service import read_record
@@ -52,20 +53,31 @@ class Handler(http.server.BaseHTTPRequestHandler):
         with sqlite3.connect(source.as_uri() + "?mode=ro", uri=True) as queue, capture.connect() as db:
             result = capture.tick(queue, db, lambda rid: read_record(capture.ROOT, rid, 65534))
             if capture.DB == Path("/var/lib/jp-reply-capture/replies.sqlite3"):
-                result["linked"] = capture_link.deliver(queue, db, lambda rid: read_record(capture.ROOT, rid, 65534), execution)
+                try:
+                    result["linked"] = capture_link.deliver(queue, db, lambda rid: read_record(capture.ROOT, rid, 65534), execution)
+                    self.pending(result,db)
+                except Exception:
+                    with db:
+                        observe(db,execution,int(time.time()),False)
+                    capture_link.notify_triage()
+                    raise
+                with db:
+                    observe(db,execution,int(time.time()),True)
                 result["triage"] = capture_link.notify_triage()
-                result["actionPending"] = False
-                policy = capture_link.CONF / "automatic-confirmations.json"
-                if policy.is_file():
-                    cfg = json.loads(policy.read_bytes())
-                    operator_feedback = (capture_link.ROOT / "ops-config/authorized-visit-feedback.json").is_file()
-                    if cfg["enabled"] and (operator_feedback or db.execute("SELECT 1 FROM captured c JOIN core_links l ON c.rowid=l.capture WHERE c.seq>? AND l.status IN ('awaiting_official','official_confirmed') LIMIT 1",(cfg["afterSequence"],)).fetchone()):
-                        result["actionPending"] = capture_link.call("pending", {"cutoff":cfg["afterUtc"]})["actionPending"]
             with db:
                 db.execute("CREATE TABLE IF NOT EXISTS ticks(execution TEXT PRIMARY KEY, at INTEGER, summary TEXT)")
                 db.execute("INSERT OR IGNORE INTO ticks VALUES(?,?,?)", (execution, int(time.time()), json.dumps(result)))
                 db.execute("DELETE FROM ticks WHERE rowid < (SELECT max(rowid)-1440 FROM ticks)")
         return result
+
+    def pending(self,result,db):
+        result["actionPending"] = False
+        policy = capture_link.CONF / "automatic-confirmations.json"
+        if policy.is_file():
+            cfg = json.loads(policy.read_bytes())
+            operator_feedback = (capture_link.ROOT / "ops-config/authorized-visit-feedback.json").is_file()
+            if cfg["enabled"] and (operator_feedback or db.execute("SELECT 1 FROM captured c JOIN core_links l ON c.rowid=l.capture WHERE c.seq>? AND l.status IN ('awaiting_official','official_confirmed') LIMIT 1",(cfg["afterSequence"],)).fetchone()):
+                result["actionPending"] = capture_link.call("pending", {"cutoff":cfg["afterUtc"]})["actionPending"]
 
 
 if __name__ == "__main__":

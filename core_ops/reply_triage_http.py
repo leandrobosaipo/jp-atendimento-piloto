@@ -61,6 +61,8 @@ def _chatwoot(case: reply_triage.Case) -> tuple[int, int]:
     when = datetime.fromisoformat(case.received_at.replace("Z", "+00:00")).astimezone(ZoneInfo("America/Cuiaba"))
     note = reply_triage.render_note(case.status, case.kind, case.disposition, case.marker, context["visits"],
                                     received=context["received"], when=when.strftime("%d/%m às %H:%M"))
+    if not context["received"] and case.kind in ("text","emoji_text","reaction"):
+        note += original_context(case)
     payload = {
         "account": 2,
         "inbox": 3,
@@ -107,6 +109,56 @@ puts 'RECEIPT='+JSON.generate(r)
         raise RuntimeError("chatwoot_private_case_failed")
     receipt = json.loads(next(line.split("=", 1)[1] for line in result.stdout.splitlines() if line.startswith("RECEIPT=")))
     return int(receipt["conversation"]), int(receipt["note"])
+
+
+def original_context(case):
+    """Quote the authenticated source in the private case, even without a matched visit."""
+    sys.path[:0]=['/opt/jp-reply-capture','/opt/jp-dispatch/current']
+    import reply_capture as capture
+    from dispatch_service import read_record
+    with sqlite3.connect(DB.as_uri()+'?mode=ro',uri=True) as db:
+        row=db.execute('SELECT record_id,envelope_pos,item_pos,message_id,content_sha256,address_hashes FROM captured WHERE rowid=?',(case.capture,)).fetchone()
+    if not row or row[3:5]!=(case.message_id,case.fingerprint):return ''
+    _,raw=read_record(capture.ROOT,row[0],65534)
+    env=(raw if isinstance(raw,list) else [raw])[row[1]]
+    batch=env['data'];msg=(batch if isinstance(batch,list) else [batch])[row[2]]
+    key=msg.get('key') or {}
+    if env.get('instance')!=capture.INSTANCE or key.get('fromMe') is not False or key.get('id')!=row[3]:return ''
+    kind,disposition,quoted,text=capture.classify(msg.get('message') or {})
+    if capture.digest(json.dumps([kind,disposition,quoted,text,json.loads(row[5])],ensure_ascii=False))!=row[4]:return ''
+    if not isinstance(text,str) or not text.strip():return ''
+    return '\nMensagem recebida na conversa de origem: «'+text[:500]+'». Esta nota é interna. Confira a conversa original antes de responder.'
+
+
+def reflect_health(db):
+    if not db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='capture_incidents'").fetchone():return
+    rows=[dict(r) for r in db.execute('SELECT start,kind,execution,stamp FROM capture_incidents WHERE noted=0 ORDER BY rowid LIMIT 4')]
+    if not rows:return
+    ruby="""require 'json'
+a=Account.find(2);i=a.inboxes.find(3)
+raise unless i.name=='Revisão privada da manutenção' && i.channel.is_a?(Channel::Api) && i.channel.webhook_url.blank? && a.webhooks.empty?
+ActiveRecord::Base.transaction do
+ ActiveRecord::Base.connection.execute('SELECT pg_advisory_xact_lock(984731283)')
+ c=a.contacts.find_or_create_by!(identifier:'jp-dell-fluxos-internos'){|x|x.name='Saúde do atendimento no Dell'}
+ raise unless c.email.blank? && c.phone_number.blank?
+ ci=ContactInbox.find_or_create_by!(contact:c,inbox:i){|x|x.source_id='jp-saude-dell'}
+ v=a.conversations.find_by(contact:c,inbox:i)||Conversation.create!(account:a,inbox:i,contact:c,contact_inbox:ci).reload
+ raise if v.messages.where(private:false).exists?
+ JSON.parse(STDIN.read).each do |r|
+  key='jp-dell/captura/'+r['start'].to_s+'/'+r['kind']
+  m=v.messages.find_by(source_id:key)||v.messages.create!(account:a,inbox:i,private:true,message_type: :outgoing,source_id:key,content:r['text'])
+  raise unless m.reload.private? && m.content==r['text']
+  v.open! if v.resolved? && r['kind']=='interrompido'
+ end
+end"""
+    for row in rows:
+        when=datetime.fromtimestamp(row['stamp'],ZoneInfo('America/Cuiaba')).strftime('%d/%m %H:%M')
+        what={'interrompido':'Passaram ao menos três minutos sem um ciclo de captura e associação saudável. Confira o n8n e o núcleo do Dell. Preserve as entradas e não reenvie avisos.',
+              'retomado':'A captura e a associação voltaram a concluir um ciclo. Confira as entradas acumuladas; este registro não comprova resposta nem entrega.'}[row['kind']]
+        row['text']=when+' (Cuiabá) · '+what+' Execução n8n '+row['execution']+'.'
+    proc=subprocess.run(['docker','exec','-i','atendimento-piloto-chat-1','bundle','exec','rails','runner',ruby],input=json.dumps(rows),text=True,capture_output=True,timeout=45)
+    if proc.returncode:raise RuntimeError('private_health_note_failed')
+    with db:db.executemany('UPDATE capture_incidents SET noted=1 WHERE start=? AND kind=?',[(r['start'],r['kind']) for r in rows])
 
 
 def reflect_questions(db):
@@ -159,6 +211,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
         try:
             with sqlite3.connect(DB, timeout=8) as db:
                 db.row_factory = sqlite3.Row
+                reflect_health(db)
                 result = reply_triage.run_tick(db, _chatwoot, limit=3)
                 reflect_questions(db)
             body = json.dumps({"processed": result["created"]}).encode()
