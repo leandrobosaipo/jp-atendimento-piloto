@@ -69,7 +69,7 @@ def plan(text,config,query,today):
 def slot_query(params):
     with socket.socket(socket.AF_UNIX) as sock:
         sock.settimeout(7)
-        sock.connect('/run/atendimento-piloto-integracao/panel.sock')
+        sock.connect('/run/atendimento-piloto-integracao/public-slots.sock')
         sock.sendall(json.dumps(dict(op='public-slots',params=params)).encode()+b'\n')
         return json.loads(sock.makefile('rb').readline(8192))
 
@@ -136,8 +136,12 @@ def publish(root,conf,db,queue,ledger,read,execution):
                     addrs=[k.get('remoteJid'),k.get('remoteJidAlt'),row.get('remoteJid'),row.get('remoteJidAlt')]
                     if k.get('id')!=mid and row.get('message') and any(cap.digest(a) in aliases for a in addrs if isinstance(a,str)):intervened=True
         if intervened:continue
-        answer=PREFERENCE if exception else plan(text,config,slot_query,dt.datetime.now(CUIABA).date())
-        if not answer or not operator_available(seq):continue
+        try:
+            answer=PREFERENCE if exception else plan(text,config,slot_query,dt.datetime.now(CUIABA).date())
+            if not answer or not operator_available(seq):continue
+        except (OSError,ValueError,http.client.HTTPException):
+            # The private case remains open. Continue processing unrelated agenda replies.
+            continue
         if queue.execute('SELECT max(seq) FROM receipts').fetchone()!=(high,):break
         candidates.append(dict(seq=seq,mid=mid,record=rid,fp=fp,number=jid.split('@')[0],answer=answer,exception=exception,received=received))
         break
