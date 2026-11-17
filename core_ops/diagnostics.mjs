@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 import v8 from 'node:v8';
 
-const defaultFile='/ops-state/core-diagnostics.jsonl';
+const defaultFile='/state/core-diagnostics.jsonl';
 const names=new Set(['Error','TypeError','RangeError','SyntaxError','ReferenceError','AssertionError','AbortError']);
 const codes=new Set(['dispatch_held','dispatch_route_denied','unbound_native_attempt','non_scalar_payload','individual_scope_denied','manual_session_expired','agenda_session_invalid','EACCES','ENOMEM','ENOSPC','ECONNREFUSED','EPIPE','EEXIST','ERR_UNHANDLED_ERROR']);
 const events=new Set(['process_start','uncaught_exception','child_exit','child_fatal','process_exit']);
