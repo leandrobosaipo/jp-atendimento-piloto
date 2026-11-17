@@ -1,0 +1,178 @@
+var stateReadCache = null;
+function stateFileIdentity(stat){return [stat.dev,stat.ino,stat.size,stat.mtimeNs,stat.ctimeNs].join(':');}
+function load() {
+  if (!fs.existsSync(file)) { stateReadCache=null; return initial(); }
+  const identity=stateFileIdentity(fs.statSync(file,{bigint:true}));
+  if(stateReadCache?.identity===identity)return JSON.parse(stateReadCache.serialized);
+  // Bind the cache to the file actually read, including external atomic replacements.
+  const descriptor=fs.openSync(file,'r');let raw,readIdentity;
+  try{const before=stateFileIdentity(fs.fstatSync(descriptor,{bigint:true}));raw=fs.readFileSync(descriptor,'utf8');const after=stateFileIdentity(fs.fstatSync(descriptor,{bigint:true}));readIdentity=before===after?before:null;}
+  finally{fs.closeSync(descriptor);}
+  const stored = JSON.parse(raw);
+  if (!isEncryptedEnvelope(stored)) {
+    if (host === '0.0.0.0') throw Error('plaintext_state_not_allowed_on_network_bind');
+    stateReadCache=readIdentity?{identity:readIdentity,serialized:raw}:null;return stored;
+  }
+  if (!encryptionKey) throw Error('encrypted_state_key_missing');
+  const serialized=decodeStateEnvelope(stored,encryptionKey);
+  const state=JSON.parse(serialized);stateReadCache=readIdentity?{identity:readIdentity,serialized}:null;return state;
+}
+function save(state) {
+  stateReadCache=null;
+  conversationContexts.delete(state);
+  reconcileVisitFeedback(state,candidates().rows,instance,{project:visitFeedback,isCurrent:(c,d)=>currentAppointmentAttempt(state,c,d)});
+  state.presentation_history=presentationHistory(state,candidates().rows);
+  fs.mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 });
+  const temp = `${file}.${process.pid}.tmp`;
+  const serialized = JSON.stringify(state);
+  let content = serialized;
+  if (encryptionKey) {
+    content = JSON.stringify(encodeStateEnvelope(content,encryptionKey));
+  }
+  fs.writeFileSync(temp, content, { mode: 0o600 });
+  fs.renameSync(temp, file);
+  // Bind the reusable plaintext to the bytes actually read after the save.
+  // A concurrent external replacement/write must invalidate this optimization.
+  try {
+    const descriptor=fs.openSync(file,'r');
+    try {
+      const before=stateFileIdentity(fs.fstatSync(descriptor,{bigint:true}));
+      const raw=fs.readFileSync(descriptor,'utf8');
+      const after=stateFileIdentity(fs.fstatSync(descriptor,{bigint:true}));
+      if(before===after&&raw===content)stateReadCache={identity:after,serialized};
+    } finally { fs.closeSync(descriptor); }
+  } catch { stateReadCache=null; } // The committed save must not fail for a cache miss.
+}
+function reply(
+async function attemptBatchItem(job,item){const cfg=readManualConfig(individualConfigFile),before=load(),candidate=candidates().rows.find(c=>c.candidate_id===item.candidate_id);
+  if(job.initial_plan)initialAttemptGuard(job.initial_plan,before);
+  if(!candidate||!batchCandidate(candidate,before,cfg)||batchFields.some(field=>candidate[field]!==item.snapshot[field])||digest(item.text)!==item.text_sha256||!individualTextValid(item.text,candidate,pendingVisit(candidate,before),!!job.initial_plan&&visitConversationStarted(candidate,before)))throw Error('batch_candidate_changed');
+  if(item.visit_group||pendingVisit(candidate,before)){
+    if(!sameVisit(item.visit_group,pendingVisit(candidate,before)))throw Error('batch_visit_changed');
+    const review={...item.snapshot,review_id:`batch-${job.job_id.slice(0,8)}-${candidate.appointment_id}`,campaign_id:'jp-confirmacao-selecao',text:item.text,content_sha256:item.text_sha256,revision:1,status:'content_approved',visit_group:item.visit_group,content_approved_by:job.operator,content_approved_at:job.started_at,...job.initial_plan?{automatic_policy_id:job.initial_plan.policy_id,generated_text_sha256:item.text_sha256}:{}};review.approval_sha256=reviewHash(review);
+    const latest=load();if(!latest.reviews.some(r=>r.review_id===review.review_id)){latest.reviews.push(review);latest.version++;save(latest);}
+    const result=await attemptVisitConfirmation(review,{operator:job.operator,individual_authorization:true,short_interval_reviewed:item.short_interval_reviewed,expected_revision:review.revision,expected_hash:review.approval_sha256,confirm_destination:review.destination_e164,confirm_text_sha256:review.content_sha256,confirm_group_sha256:item.visit_group.group_sha256,confirm_appointment_ids:item.visit_group.appointment_ids},job.initial_plan);return result.individual_dispatch?.status||'delivery_unknown';
+  }
+  if(individualConfirmationBusy||rescheduleOffers.isBusy()||job.initial_plan&&(appointmentMoveBusy||agendaJobBusy))throw Error('individual_send_busy');individualConfirmationBusy=true;let attempted=false;
+  try{
+    const proof=await preflightIndividualConfirmation(candidate,cfg,job.initial_plan?{fetchImpl:noticeFetch(candidate)}:{});
+    if(job.initial_plan){const agenda=agendaConfig();proof.official_readback=await readOfficialConfirmation(candidate,{...agenda,expires_at:agenda?.expires_at||agenda?.session?.expires_at},noticeFetch(candidate),true);if(proof.official_readback.confirmed)throw Error('initial_official_already_confirmed');await initialOfficialGuard(job.initial_plan);}
+    const latest=load(),live=candidates().rows.find(c=>c.candidate_id===item.candidate_id);
+    if(!individualTextValid(item.text,live)||!live||!batchCandidate(live,latest,readManualConfig(individualConfigFile))||batchFields.some(field=>live[field]!==item.snapshot[field]))throw Error('batch_candidate_changed_after_preflight');
+    if(job.initial_plan)initialAttemptGuard(job.initial_plan,latest);
+    let review=(latest.reviews||[]).filter(r=>r.candidate_id===candidate.candidate_id&&r.text===item.text&&r.status==='content_approved').at(-1);
+    if(!review){review={review_id:`batch-${job.job_id.slice(0,8)}-${candidate.appointment_id}`,campaign_id:'jp-confirmacao-selecao',candidate_id:candidate.candidate_id,client_code:candidate.client_code,destination_e164:candidate.destination_e164,consent_source:candidate.consent_source||null,consent_at:candidate.consent_at||null,text:item.text,content_sha256:item.text_sha256,revision:1,status:'content_approved',updated_by:job.operator,updated_at:new Date().toISOString(),approved_by:null,approved_at:null,content_approved_by:job.operator,content_approved_at:new Date().toISOString()};for(const field of ['kind','appointment_id','appointment_date','appointment_time','service','professional','personal_test'])if(candidate[field]!==undefined)review[field]=candidate[field];review.approval_sha256=reviewHash(review);latest.reviews||=[];latest.reviews.push(review);}
+    const attemptId=randomUUID(),reservationId=reserveStateSendBudget(latest,item.text,{kind:'appointment_confirmation',destination_e164:candidate.destination_e164,single:true,reservation_id:attemptId}),dispatch={attempt_id:attemptId,outbound_budget_reservation_id:reservationId,conversation_snapshot:conversationSnapshot(candidate,review.text,instance),appointment_id:candidate.appointment_id,review_id:review.review_id,revision:review.revision,content_sha256:item.text_sha256,destination_e164:candidate.destination_e164,status:'delivery_unknown',attempted_at:new Date().toISOString(),operator:job.operator,individual_authorization:true,authorization_at:job.started_at,authorization_scope:'selected_appointment_and_message_only',batch_job_id:job.job_id,preflight:proof,delivery_confirmed:false};
+    if(job.initial_plan){review.automatic_policy_id=job.initial_plan.policy_id;review.generated_text_sha256=item.text_sha256;markInitialAttempt(latest,job.initial_plan);Object.assign(dispatch,initialAuthorization(job.initial_plan));}
+    latest.individual_dispatches||=[];latest.individual_dispatches.push(dispatch);audit(latest,'batch_individual_confirmation_attempted',review.review_id,job.operator);latest.version++;save(latest);attempted=true;
+    const result=await sendIndividualConfirmation(item.text,candidate,cfg);const after=load(),stored=(after.individual_dispatches||[]).find(d=>d.appointment_id===candidate.appointment_id&&d.batch_job_id===job.job_id);if(stored){Object.assign(stored,result);captureContactRegistration(after,candidate,stored);after.version++;save(after);finishSendBudget(reservationId,stored);}return result.status;
+  }catch(error){if(attempted)return 'delivery_unknown';throw error;}finally{individualConfirmationBusy=false;}
+}
+async function runBatchJob(
+async function runInitialConfirmationTick(access,executionId,dispatchReady=true,stage='all'){
+  const summary={status:'paused',planned:0,due:0,attempted:0,blocked:0};if(!initialSettings().enabled)return summary;
+  summary.status='completed';const now=Date.now(),today=localDay(now),morning=Date.parse(`${today}T07:45:00-04:00`),sendAt=Date.parse(`${today}T08:00:00-04:00`),phase=now>=sendAt&&now<sendAt+600000?'send':'daily',state=load(),sync=state.initial_confirmation_source_sync;
+  const controlled=state.dispatch_sync_policy?.enabled===true,dailyDue=controlled?now>=morning&&now<sendAt&&sync?.day!==today:now>=morning&&(sync?.day!==today||sync?.status!=='completed'&&now<sendAt),sendDue=!controlled&&phase==='send'&&(sync?.send_day!==today||sync?.status!=='completed');
+  if(stage==='all'&&(dailyDue||sendDue)&&(!sync?.requested_at||now-Date.parse(sync.requested_at)>=5*60000)){
+    if(access.status!=='connected'){summary.status='awaiting_access';}
+    else try{
+      // The existing one-minute n8n tick owns this job; the canonical sync code
+      // retains backups, the rolling current/next-week range and source readback.
+      const created=createJob('agenda_sync','jp_initial_confirmation_policy');updateJob(created.job.job_id,job=>{job.status='running';job.execution_id=executionId||null;job.capability_consumed_at=new Date().toISOString();});
+      const latest=load();latest.initial_confirmation_source_sync={day:today,send_day:phase==='send'?today:null,status:'running',requested_at:new Date().toISOString(),job_id:created.job.job_id};latest.version++;save(latest);
+      await runAgendaJob(created.job.job_id);const after=load(),job=(after.jp_jobs||[]).find(j=>j.job_id===created.job.job_id);after.initial_confirmation_source_sync={...after.initial_confirmation_source_sync,status:job.status,checked_at:job.source_checked_at||null,error:job.error||null};after.version++;save(after);
+    }catch(error){summary.status=error.message==='job_already_running'?'awaiting_sync':'sync_unavailable';}
+  }
+  planInitialConfirmations();summary.planned=(load().initial_confirmations||[]).filter(p=>p.status==='scheduled').length;
+  if(stage==='plan-initial')return summary;
+  const due=(load().initial_confirmations||[]).filter(p=>p.status==='scheduled'&&initialWindow(p)==='due');summary.due=due.length;
+  if(access.status!=='connected'){summary.status='awaiting_access';return summary;}
+  if(due.length&&(!dispatchReady||!dispatchSyncProof(load(),executionId,true))){summary.status='awaiting_dispatch_sync';return summary;}
+  for(const storedPlan of due){
+    const plan={...storedPlan,dispatch_execution_id:executionId};
+    const currentSync=load().initial_confirmation_source_sync;if(plan.schedule_origin!=='new_booking_after_weekly_window'&&(currentSync?.status!=='completed'||currentSync.send_day!==today)){summary.status='awaiting_sync';break;}
+    try{
+      initialAttemptGuard(plan);const latest=load(),candidate=candidates().rows.find(c=>c.candidate_id===plan.candidate_ids[0]),text=initialText(plan,latest,new Date().toISOString()),item={candidate_id:candidate.candidate_id,appointment_id:candidate.appointment_id,destination_e164:candidate.destination_e164,text,text_sha256:digest(text),snapshot:Object.fromEntries(batchFields.map(field=>[field,candidate[field]])),visit_group:plan.visit_group||undefined,short_interval_reviewed:true,status:'queued'};
+      const result=await attemptBatchItem({job_id:digest(plan.plan_id),operator:plan.authorized_by,started_at:plan.authorized_at,initial_plan:plan},item),after=load(),stored=(after.initial_confirmations||[]).find(p=>p.plan_id===plan.plan_id);
+      if(stored?.attempted_at){stored.status=result;stored.updated_at=new Date().toISOString();stored.text=text;stored.text_sha256=item.text_sha256;after.version++;save(after);summary.attempted++;}
+    }catch(error){const after=load(),stored=(after.initial_confirmations||[]).find(p=>p.plan_id===plan.plan_id);if(stored?.status==='scheduled'){if(['initial_policy_paused_or_changed','individual_send_busy','initial_source_refresh_required','dispatch_sync_required'].includes(error.message))continue;stored.status='blocked';stored.blocked_reason=error.message;stored.updated_at=new Date().toISOString();after.version++;save(after);summary.blocked++;}else if(stored?.attempted_at)summary.attempted++;}
+  }
+  return summary;
+}
+async function runReminderTick(executionId=null,dispatchReady=true,stage='all'){
+  if(reminderTickBusy||replyAutomation.isBusy()||responseReprocessBusy||rescheduleOffers.isBusy()||currentVisitResolution.isBusy()||newVisits.isBusy())return {status:'busy',due:0,attempted:0};reminderTickBusy=true;
+  const summary={status:'completed',planned:0,due:0,attempted:0,blocked:0};
+  try{
+    summary.agenda_access=await agendaAccess();
+    if(stage==='all'||stage==='maintenance'){
+      reconcileCustomerRequests();
+      if(summary.agenda_access.status==='renewal_required')summary.access_renewal=renewalPublic(requestAccessRenewal('n8n_tick','jp_n8n_tick'));
+    }
+    if(['all','plan-initial','send-initial'].includes(stage))summary.initial_confirmations=await runInitialConfirmationTick(summary.agenda_access,executionId,dispatchReady,stage==='all'?'all':stage);
+    if(stage==='all'||stage==='maintenance')summary.realized_cancelled=cancelRealizedReminders();
+    if((stage==='all'||stage==='maintenance')&&summary.agenda_access.status==='connected'){
+      const state=load(),renewal=(state.access_renewals||[]).at(-1);
+      if(renewal?.status==='awaiting_sync'&&!renewal.sync_job_id){
+        try{
+          jobConfig();const created=createJob('agenda_sync','jp_access_recovery');
+          const latest=load(),pending=(latest.access_renewals||[]).find(row=>row.job_id===renewal.job_id);
+          if(pending?.status==='awaiting_sync'&&!pending.sync_job_id){pending.sync_job_id=created.job.job_id;pending.status='synchronizing';pending.updated_at=new Date().toISOString();latest.version++;save(latest);if(n8nStageMode)await dispatchJob(created.job,created.capability);else setImmediate(()=>dispatchJob(created.job,created.capability));}
+        }catch(error){if(error.message!=='job_already_running')console.error('appbarber_recovery_sync_unavailable');}
+      }
+      await coalesceLegacyReminderPlans();
+    }
+    if(['all','reconcile-responses','plan-reminders'].includes(stage)){
+    const responseSnapshot=load(),responseCandidates=new Map(candidates().rows.filter(c=>c.source_active!==false&&c.kind==='appointment_confirmation').map(c=>[c.appointment_id,c])),activationSecond=responseSnapshot.n8n_orchestration?.activated_at?Math.floor(Date.parse(responseSnapshot.n8n_orchestration.activated_at)/1000)*1000:n8nActivationSecond();
+    for(const id of new Set((responseSnapshot.jp_responses||[]).filter(r=>{const candidate=responseCandidates.get(r.appointment_id);return r.intent==='confirmed'&&(stage==='all'||Date.parse(r.at)>=activationSecond||r.official_update?.reconciled_by==='jp_reply_automation')&&candidate&&Date.parse(`${candidate.appointment_date_iso}T${candidate.appointment_time}:00-04:00`)>Date.now()}).map(r=>r.appointment_id))){
+      const reuseSnapshot=process.env.JP_REPLY_AUTOMATION_ENABLED==='1',currentState=reuseSnapshot?responseSnapshot:load(),record=responseRecord(currentState,id);if(record?.intent!=='confirmed'||visitFeedback(responseCandidates.get(id),currentState)?.reminder_hold)continue;
+      if(record.official_update?.status==='reschedule_requires_customer_confirmation')continue;
+      if(process.env.JP_REPLY_AUTOMATION_ENABLED!=='1'&&((stage!=='plan-reminders'&&n8nStageAgendaWriteEnabled)||stage==='all')){
+        if(record.official_update?.attempted_at&&record.official_update.status!=='confirmed')await reconcileOfficial(id);
+        else if(record.official_update?.status!=='confirmed')await updateOfficial(id,'jp_n8n_tick');
+      }
+      if(stage!=='reconcile-responses'){const result=autoPlanConfirmed(id,'jp_n8n_tick',reuseSnapshot?responseSnapshot:null,responseCandidates.get(id));summary.planned+=result.created||0;}
+    }
+    }
+    if((stage==='all'||stage==='plan-reminders')&&summary.agenda_access.status==='connected')await coalesceLegacyReminderPlans();
+    if(!['all','send-reminders'].includes(stage))return summary;
+    const due=(load().reminders||[]).filter(r=>['scheduled','awaiting_access'].includes(r.status)&&r.enabled===true&&Date.parse(r.send_at)<=Date.now()&&(!r.preflight_retry_at||Date.parse(r.preflight_retry_at)<=Date.now()));summary.due=due.length;
+    if(due.length&&(!dispatchReady||!dispatchSyncProof(load(),executionId,true))){summary.status='awaiting_dispatch_sync';return summary;}
+    for(const snapshot of due){
+      const state=load(),row=(state.reminders||[]).find(r=>r.reminder_id===snapshot.reminder_id&&['scheduled','awaiting_access'].includes(r.status));
+      if(!row)continue;
+      const candidate=followupCandidate(row.appointment_id),response=responseRecord(state,row.appointment_id),cfg=readManualConfig(individualConfigFile);
+      const same=candidate&&row.appointment_id===candidate.appointment_id&&['client_code','professional_code','service_code','appointment_date_iso','appointment_time'].every(k=>candidate[k]===row.identity[k])&&candidate.destination_e164===row.destination_e164;
+      const legacyGroup=candidate&&legacyConfirmedVisit(candidate,state),groupStable=row.visit_group?sameVisit(row.visit_group,confirmedVisit(candidate,state)):!legacyGroup;
+      const conversationBlocked=contactBlocked(state,row.destination_e164);
+      const reason=!same?'appointment_changed':!groupStable?(row.visit_group?'appointment_changed':'visit_reminder_consolidation_required'):response?.intent==='opt_out'||conversationBlocked?'contact_blocked':response?.intent!=='confirmed'||response.official_update?.status!=='confirmed'?'confirmation_unverified':Date.now()-Date.parse(row.send_at)>5*60000?'scheduled_time_expired':Date.parse(`${candidate.appointment_date_iso}T${candidate.appointment_time}:00-04:00`)<=Date.now()?'appointment_past':!relativeMessageValid(row.text,candidate,new Date().toISOString(),5)?'message_time_changed_review_again':null;
+      if(reason){row.status='blocked';row.blocked_reason=reason;row.enabled=false;row.updated_at=new Date().toISOString();state.version++;save(state);summary.blocked++;continue;
+      }
+      if(!(sendAuthorizationUntil(cfg)>Date.now()))continue;
+      let proof;try{
+        const members=row.visit_group?dispatchMembers(row):[candidate];
+        if(!members.length||row.visit_group&&members.length!==row.visit_group.appointment_ids.length)throw Error('visit_changed');
+        await readInitialVisitMembership({appointments:members,appointment_ids:members.map(c=>c.appointment_id)},agendaConfig(),{fetchImpl:noticeFetch(candidate)});
+        for(const member of members){const reader=noticeFetch(member),readback=await readOfficialConfirmation(member,agendaConfig(),reader,true);
+          const previous=responseRecord(state,member.appointment_id)?.official_update?.readback;
+          if(!readback.confirmed||!previous?.item_code||!['appointment_id','item_code','start','end','client_code','professional_code','service_code'].every(k=>previous[k]===readback[k]))throw Error('official_not_confirmed');
+          await preflightIndividualConfirmation(member,readManualConfig(individualConfigFile),{fetchImpl:reader});if(member.appointment_id===candidate.appointment_id)proof=readback;}if(!proof)throw Error('visit_changed');if(!(sendAuthorizationUntil(cfg)>Date.now())||cfg?.instance!==instance||!cfg?.token)throw Error('send_config_unavailable');}catch(error){const latest=load(),pending=(latest.reminders||[]).find(r=>r.reminder_id===row.reminder_id&&['scheduled','awaiting_access'].includes(r.status)&&r.enabled===true);if(pending){const patch=reminderPreflightFailure(pending,error);if(patch){Object.assign(pending,patch);latest.version++;save(latest);if(patch.status==='blocked')summary.blocked++;else summary.preflight_retries=(summary.preflight_retries||0)+1;}}continue;}
+      const latest=load(),current=(latest.reminders||[]).find(r=>r.reminder_id===row.reminder_id&&['scheduled','awaiting_access'].includes(r.status)&&r.enabled===true),live=current&&followupCandidate(current.appointment_id);
+      if(!current||!live)continue;
+      const identityStable=['client_code','professional_code','service_code','appointment_date_iso','appointment_time'].every(k=>live[k]===current.identity[k]&&live[k]===candidate[k])&&live.destination_e164===current.destination_e164&&live.destination_e164===candidate.destination_e164;
+      if(!(sendAuthorizationUntil(readManualConfig(individualConfigFile))>Date.now()))continue;
+      const stillReady=reminderReadiness(live,latest).available&&(!current.visit_group||sameVisit(current.visit_group,confirmedVisit(live,latest)))&&!contactBlocked(latest,current.destination_e164)&&identityStable&&relativeMessageValid(current.text,live,new Date().toISOString(),5)&&Date.now()-Date.parse(current.send_at)<=5*60000&&Date.parse(`${live.appointment_date_iso}T${live.appointment_time}:00-04:00`)>Date.now();
+      if(!stillReady){current.status='blocked';current.blocked_reason=!identityStable?'appointment_changed':contactBlocked(latest,current.destination_e164)?'contact_blocked':'confirmation_unverified';current.enabled=false;current.updated_at=new Date().toISOString();latest.version++;save(latest);summary.blocked++;continue;}
+      // The durable unknown state precedes the provider request; a crash cannot cause a blind retry.
+      const reservationId=reserveStateSendBudget(latest,current.text,{kind:'reminder',destination_e164:current.destination_e164,single:true,reservation_id:`reminder:${current.reminder_id}`});
+      current.outbound_budget_reservation_id=reservationId;current.status='delivery_unknown';current.attempted_at=new Date().toISOString();current.official_preflight=proof;current.updated_at=current.attempted_at;audit(latest,'reminder_attempted',`${current.appointment_id}:${current.key}`,current.authorized_by);latest.version++;save(latest);summary.attempted++;
+      const result=await sendIndividualConfirmation(current.text,live,cfg);const after=load(),stored=(after.reminders||[]).find(r=>r.reminder_id===current.reminder_id&&r.attempted_at===current.attempted_at);
+      if(stored){stored.status=result.status;stored.provider_message_id=result.message_id;stored.message_id=result.message_id;stored.provider_status=result.provider_status;stored.updated_at=new Date().toISOString();captureContactRegistration(after,live,{...stored,individual_authorization:true});after.version++;save(after);finishSendBudget(reservationId,stored);}
+    }
+    return summary;
+  }finally{reminderTickBusy=false;}
+}
+
+// Reconcile recorded events
+        const state=load();let due=true;try{due=dispatchDueWithin(state,Date.now())}catch{}const ready=dispatchSyncProof(state,identity.executionId,due),result=await runReminderTick(identity.executionId,ready,stage);
+        return n8nStageResponse(res,identity,stage,200,{ok:true,...result,dispatch_sync:{ready,due}});
+      }
