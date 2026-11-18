@@ -67,10 +67,13 @@ def calculate(execution_id):
     clients,ch=_request('/pages/cadastros/buscaClientes.php',{})
     hist,hh=_request('/pages/relatorios/buscaAgendamentos.php',{'edtDataIni':(today-dt.timedelta(days=90)).strftime('%d/%m/%Y'),'edtDataFim':(today-dt.timedelta(days=1)).strftime('%d/%m/%Y'),'tipoStatus':'','AgeCliente':'','AgeProfissional':'','AgeServico':''})
     future,fh=_request('/pages/relatorios/buscaListaAgendamento.php',{'profissional':'','servico':'','cliente':'','dataini':today.strftime('%d/%m/%Y'),'datafim':(today+dt.timedelta(days=365)).strftime('%d/%m/%Y'),'tipo':'1'})
-    all_dates=defaultdict(list); maintenance=defaultdict(list)
+    all_dates=defaultdict(list); maintenance=defaultdict(list); unattributed=0
     for row in hist:
         key,when=_code(row),_date(row)
-        if not key or not when: raise ValueError('history_row_incomplete')
+        if not when or not key and (today-when).days<=14: raise ValueError('history_row_incomplete')
+        if not key:
+            unattributed+=1
+            continue
         all_dates[key].append(when)
         service=str(row.get('Servico') or '').lower()
         if "title='Realizado'" in str(row.get('Status') or '') and 'manuten' in service and ('prótese' in service or 'protese' in service): maintenance[key].append(when)
@@ -84,6 +87,6 @@ def calculate(execution_id):
         rows.append({'client_code':key,'name':names.get(key),'last_maintenance':str(last),'days_since':age,'consent':status,'reason':reason})
     rows.sort(key=lambda x:(x['days_since'],x['name'] or ''))
     counts=dict(Counter(x['reason'] for x in rows))
-    summary={'candidates':len(rows),'customers':len(names),'reasons':counts,'history_rows':len(hist),'future_rows':len(future)}
+    summary={'candidates':len(rows),'customers':len(names),'reasons':counts,'history_rows':len(hist),'future_rows':len(future),'older_rows_without_customer':unattributed}
     save(target,{'day':str(today),'generated_at':dt.datetime.now(dt.timezone.utc).isoformat(),'execution_id':execution_id,'held':sorted(holds),'sources':{'clients':ch,'history':hh,'future':fh},'summary':summary,'rows':rows})
     return {**summary,'refreshed':True,'source_execution':execution_id}
