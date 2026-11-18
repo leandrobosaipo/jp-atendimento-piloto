@@ -9,12 +9,14 @@ async function scenario({confirmed=[],held=false,unknown=false,deny=false,firstR
     appointment_date_iso:day,appointment_date:'future',service_code:id,professional_code:'4'}));
   const d={message_id:'notice',destination_e164:members[0].destination_e164,content_sha256:'z',conversation_snapshot:{client_code:'3',text_sha256:'z'},visit_group:{appointment_ids:['11','22']}};
   const st={individual_dispatches:[d],version:0};let paused=false;const writes=[],attempted=new Set();
-  const h={target:()=>({members,candidate:members[0],dispatch:d}),window:()=>true,support:()=>false,blocked:()=>paused,
+  const h={target:state=>({members,candidate:members[0],dispatch:state.individual_dispatches[0]}),window:()=>true,support:()=>false,blocked:()=>paused,
     feedback:()=>null,load:()=>st,save:()=>{},snapshot:c=>({...c}),instance:'fixture',read:async c=>({
       ...c,confirmed:confirmed.includes(c.appointment_id),status:'1',start:day+'T'+c.appointment_time,item_code:c.appointment_id+'9'})};
   const event={mid:'answer',record:hash('source'),content:hash('response'),at:new Date().toISOString(),providerTime:true,
     pn:hash('5511999999999@s.whatsapp.net'),kind:'emoji_text',text:'👍',disposition:'possible_confirmation',delivered:['notice']};
   if(firstReadFails){
+    h.load=()=>structuredClone(st);
+    h.save=s=>Object.assign(st,s);
     const read=h.read;
     h.read=async()=>{throw Error('source_unavailable')};
     await consumeVisit(event,h);

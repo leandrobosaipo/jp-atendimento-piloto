@@ -91,8 +91,9 @@ export async function consumeVisit(event, h, preview=false) {
   const confirmRequest=grantable ? {key,client:target.candidate.client_code,phone:target.candidate.destination_e164,
     ids:appointments,notice,at:event.at} : null;
   if (receipt && receipt.status===status) {
-    if (grantable && !receipt.confirmationEvidence) {
-      receipt.confirmationEvidence={event,snapshots:target.members.map(h.snapshot)};
+    const current=seen[key];
+    if (grantable && current && !current.confirmationEvidence) {
+      current.confirmationEvidence={event,snapshots:target.members.map(h.snapshot)};
       state.version++;
       h.save(state);
     }
