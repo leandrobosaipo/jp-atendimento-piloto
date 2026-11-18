@@ -1,0 +1,9 @@
+[Unit]
+Description=Prepare an informational reply for the active knowledge revision
+
+[Socket]
+ListenStream=/run/jp-published-answers.sock
+SocketMode=0600
+
+[Install]
+WantedBy=sockets.target

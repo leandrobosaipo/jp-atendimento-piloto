@@ -41,10 +41,16 @@ def plan(text,config,query,today):
     if intent=='sensitive':return None
     if re.search(r'\b(reagendar|remarcar|mudar|trocar)\b',words) and not re.search(r'\b(horario|agendamento|hora|manutencao|visita)\b',words):return None
     if intent=='availability' or re.search(r'\b(reagendar|remarcar|agendamento|encaixe)\b',words):
+        price=''
+        if service and re.search(r'\b(preco|valor|custa|custo)\b',words):
+            fact,amount,decision,_=artwork_quote(text,service,config['catalog'])
+            if decision!='answer':return None
+            if fact.get('category')=='clarify':return amount
+            price=amount+' '
         date=choose_day(words,today)
         if not service:return 'Qual serviço você gostaria de agendar?'
-        if date is None:return 'Qual dia ou período você prefere para esse serviço?'
-        if not prof:return 'Você tem preferência de profissional para esse dia?'
+        if date is None:return price+'Qual dia ou período você prefere para esse serviço?'
+        if not prof:return price+'Você tem preferência de profissional para esse dia?'
         if config['professionals'][prof].get('human_only'):return None
         facts=query(dict(service_key=service,professional_key=prof,date=date.isoformat()))
         if facts.get('status')!='ok' or facts.get('date')!=date.isoformat():return None
@@ -53,7 +59,7 @@ def plan(text,config,query,today):
         if 'de manha' in words:slots=[s for s in slots if s<'12:00']
         elif 'a tarde' in words:slots=[s for s in slots if '12:00'<=s<'18:00']
         label=date.strftime('%d/%m')
-        return (f'Para {label}, encontrei '+', '.join(slots[:3])+'. Qual horário você prefere?') if slots else f'Não encontrei vaga nesse período em {label}. Qual outro dia funciona para você?'
+        return price+((f'Para {label}, encontrei '+', '.join(slots[:3])+'. Qual horário você prefere?') if slots else f'Não encontrei vaga nesse período em {label}. Qual outro dia funciona para você?')
     if intent=='price':
         if not service and not any(set(normal(r['name']).split()) & set(words.split()) for r in config['catalog']['service_art_prices']):
             return 'De qual serviço você quer saber o valor?'
@@ -136,14 +142,26 @@ def publish(root,conf,db,queue,ledger,read,execution):
                     addrs=[k.get('remoteJid'),k.get('remoteJidAlt'),row.get('remoteJid'),row.get('remoteJidAlt')]
                     if k.get('id')!=mid and row.get('message') and any(cap.digest(a) in aliases for a in addrs if isinstance(a,str)):intervened=True
         if intervened:continue
+        learned=None
         try:
-            answer=PREFERENCE if exception else plan(text,config,slot_query,dt.datetime.now(CUIABA).date())
+            from published_answers import candidate,subject
+            if not exception and subject(text) and (conf/'published-answers.json').is_file():
+                if not operator_available(seq):continue
+                learned=candidate(text,seq,execution,db,conf)
+                if not learned:continue
+                answer=learned['answer']
+            else:
+                answer=PREFERENCE if exception else plan(text,config,slot_query,dt.datetime.now(CUIABA).date())
             if not answer or not operator_available(seq):continue
         except (OSError,ValueError,http.client.HTTPException):
             # The private case remains open. Continue processing unrelated agenda replies.
             continue
         if queue.execute('SELECT max(seq) FROM receipts').fetchone()!=(high,):break
         candidates.append(dict(seq=seq,mid=mid,record=rid,fp=fp,number=jid.split('@')[0],answer=answer,exception=exception,received=received))
+        if learned:
+            candidates[-1]['knowledge']={k:learned[k] for k in ('revision','topic','source')}
+            db.execute('CREATE TABLE IF NOT EXISTS kb_proposals(seq INTEGER PRIMARY KEY,revision TEXT,topic TEXT,source TEXT,execution TEXT)')
+            db.execute('INSERT OR IGNORE INTO kb_proposals VALUES(?,?,?,?,?)',(seq,learned['revision'],learned['topic'],learned['source'],execution))
         break
     path=root/'ops-config/read-grants/public-requests.json'
     if not candidates and not path.exists():return

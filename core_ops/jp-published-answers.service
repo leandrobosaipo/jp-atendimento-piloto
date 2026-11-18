@@ -1,0 +1,16 @@
+[Unit]
+Description=Prepare general answers from the published knowledge base
+
+[Service]
+ExecStart=/usr/bin/python3 -B /opt/jp-reply-capture/published_answers.py
+StateDirectory=jp-published-answers
+StateDirectoryMode=0700
+UMask=0077
+ProtectSystem=strict
+ProtectHome=yes
+PrivateDevices=yes
+PrivateTmp=yes
+NoNewPrivileges=yes
+RestrictAddressFamilies=AF_UNIX
+CapabilityBoundingSet=CAP_DAC_READ_SEARCH
+InaccessiblePaths=/run/jp-dispatch /var/lib/jp-dispatch /etc/jp-dispatch /var/lib/jp-migracao-revisao /var/lib/jp-reply-capture /etc/jp-reply-capture

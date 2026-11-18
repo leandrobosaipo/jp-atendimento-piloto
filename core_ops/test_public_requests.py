@@ -15,3 +15,5 @@ assert '13:30' not in plan('Quero agendar manutenção com Pedro amanhã de manh
 assert 'manutenção' in plan('Quais serviços vocês fazem?',cfg,query,today)
 assert plan('Quero cancelar o horário',cfg,query,today) is None
 assert plan('👍',cfg,query,today) is None
+compound=plan('Qual o preço da manutenção e tem vaga com Pedro amanhã?',cfg,query,today)
+assert '120,00' in compound and '09:00' in compound
