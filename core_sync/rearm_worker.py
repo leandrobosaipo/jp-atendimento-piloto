@@ -19,6 +19,7 @@ import tempfile
 import time
 from uuid import UUID
 from renewal_lease import reserve
+from partial_directory import partial_failure
 
 CORE=Path('/var/lib/jp-migracao-revisao/core-transacional')
 WORKER=Path('/var/lib/agenda-renovacao-private')
@@ -90,14 +91,28 @@ def refused_reads(reader):
 def run(args):
     os.umask(0o077)
     require(os.geteuid()==0 and str(UUID(args.job))==args.job,'root_and_native_job_required')
-    lease=(CORE/'install.lock').open('rb');fcntl.flock(lease,fcntl.LOCK_EX|fcntl.LOCK_NB)
-    cid=load(CORE/'install.json')['container'];native=native_job(cid)
+    operational=getattr(args,'operational',False)
+    root=CORE.parent/'core-operacional' if operational else CORE
+    lease=(root/('ops-state/lease.lock' if operational else 'install.lock')).open('rb')
+    fcntl.flock(lease,fcntl.LOCK_EX|fcntl.LOCK_NB)
+    cid='jp-core-operacional' if operational else load(CORE/'install.json')['container']
+    native=native_job(cid)
     require(native=={'job_id':args.job,'status':'requested'},'not_native_requested_job')
-    intent=load(CORE/'state/renewal-intents'/(args.job+'.json'));execution=intent.get('execution','')
+    intent=load(root/'state/renewal-intents'/(args.job+'.json'));execution=intent.get('execution','')
     require(re.fullmatch(r'[0-9]{1,20}',execution),'native_execution_required')
-    a=CORE/'state/admissions'/(execution+'-renewal-run.json')
-    require(load(a)['workflow']==load(CORE/'config/runtime.json')['renewalId'] and
-            load(a.with_name(a.name+'.done'))['result'].get('worker_result')=='awaiting_human','renewal_execution_incomplete')
+    if operational:
+        owner=load(root/'ops-state/ownership.json')
+        spec=load(root/'ops-config/manifest.json')['renewal']
+        node,=[n for n,path in spec['nodes'].items() if path.endswith('/renewal-run')]
+        receipt=load(root/'ops-state/admissions'/(spec['workflow']+'-'+execution+'-'+node+'.done'))
+        require(intent.get('job')==args.job and intent.get('stage')=='requested' and owner['mode']=='owned'
+                and owner['owner']=='central-dell' and receipt['epoch']==owner['epoch']
+                and receipt['workflow']==spec['workflow'] and receipt['stage']=='renewal-run'
+                and receipt['status']==200,'renewal_execution_incomplete')
+    else:
+        a=CORE/'state/admissions'/(execution+'-renewal-run.json')
+        require(load(a)['workflow']==load(CORE/'config/runtime.json')['renewalId'] and
+                load(a.with_name(a.name+'.done'))['result'].get('worker_result')=='awaiting_human','renewal_execution_incomplete')
     receipt=load(WORKER/'provider-v2-receipt.json');wid=receipt['cid']
     wi=json.loads(shell('docker','inspect',wid))[0]
     require(wi['State']['Running'] and not wi['HostConfig']['PortBindings'] and
@@ -113,11 +128,13 @@ def run(args):
     require(len(sent)==1 and any(j['event'] in ('credential_response','otp_response') and j.get('success') is True for j in events),'prior_auth_uncertain')
     now=dt.datetime.now(dt.timezone.utc);last=dt.datetime.fromisoformat(sent[0]['at'].replace('Z','+00:00'))
     refusals=refused_reads(reader)
-    require(refusals==[True,True] and now-last>=dt.timedelta(minutes=30),'reader_or_cooldown_held')
-    summary={'generation':gen,'execution':execution,'job':args.job,'official_refusals':2}
+    require(now-last>=dt.timedelta(minutes=30),'reader_or_cooldown_held')
+    partial = refusals==[False,False] and partial_failure(reader,cfg['known_appointments'])
+    require(refusals==[True,True] or partial,'reader_or_cooldown_held')
+    summary={'generation':gen,'execution':execution,'job':args.job,'official_refusals':sum(refusals),'partial_directory':partial}
     if not args.apply:return {**summary,'result':'plan'}
     box=CORE/'renewal-leases';box.mkdir(mode=0o700,exist_ok=True)
-    reserve(box,intent,native,gen,last,now,refusals,human)
+    reserve(box,intent,native,gen,last,now,refusals,human,partial_directory=partial)
     bundle=box/args.job;bundle.mkdir(mode=0o700)
     names=('verified-candidate.sealed.json','official-auth-attempt.json','official-auth-events.ndjson')
     for n in (*names,'config.json'):dump(bundle/n,(w/n).read_bytes())
@@ -148,6 +165,7 @@ def run(args):
 if __name__=='__main__':
     parser=argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--job',required=True);parser.add_argument('--apply',action='store_true')
+    parser.add_argument('--operational',action='store_true')
     try:print(json.dumps(run(parser.parse_args())))
     except Exception as exc:
         brief=str(exc) if isinstance(exc,ValueError) and re.fullmatch('[a-z_]+',str(exc)) else 'operation_held_check_native_receipts'

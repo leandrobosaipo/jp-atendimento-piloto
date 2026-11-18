@@ -5,10 +5,11 @@ import os
 from pathlib import Path
 from uuid import UUID
 
-def reserve(directory, intent, job, generation, last, now, refused, human_active):
+def reserve(directory, intent, job, generation, last, now, refused, human_active, *, partial_directory=False):
     identity = str(UUID(job['job_id']))
     if (identity != intent.get('job') or job['status'] != 'requested' or
-            generation < 1 or human_active or refused != [True, True] or
+            generation < 1 or human_active or not (refused == [True, True] or
+            refused == [False, False] and partial_directory is True) or
             not dt.timedelta(minutes=30) <= now-last <= dt.timedelta(days=365)):
         raise ValueError('native_recovery_held')
     data = {'job':identity,'generation':generation,'reserved_at':now.isoformat()}
