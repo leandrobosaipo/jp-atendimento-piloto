@@ -14,6 +14,7 @@ jobs:
           python3 -m compileall -q core_ops
           python3 -m unittest discover -s core_ops -p 'test_confirmation_memory.py'
           python3 -m unittest discover -s core_ops -p 'test_receipt_reply_identity.py'
+          python3 -m unittest discover -s core_ops -p 'test_receipt_capture_pending.py'
           node --test core_ops/test_central_receipt.mjs
           python3 -m unittest discover -s core_sync -p 'test_partial_directory.py'
           node --test core_ops/test_diagnostics.mjs core_ops/test_ops.mjs core_ops/test_task_reads.mjs core_ops/test_effect_guard.mjs
