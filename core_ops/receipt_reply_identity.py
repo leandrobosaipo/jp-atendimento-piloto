@@ -12,7 +12,7 @@ def verified_pairs(ledger, authority, now):
         "SELECT attempt,native,destination FROM dispatch_attempts WHERE state IN ('delivered','read') AND attempted>=?",
         (now - 9 * 86400,),
     ):
-        instance, m = authority(attempt)
+        instance, m = authority(dict(attempt=attempt,native=native,destination=jid))
         if not m:
             continue
         pn = cap.digest(jid)
@@ -53,7 +53,8 @@ def team_aliases(queue, db, read):
 
 
 def extend(queue, db, read, cfg, ledger):
-    from dispatch_service import CONFIG, receipt_authority
+    from dispatch_service import CONFIG
+    from receipt_catalog import authority
     db.execute("CREATE TABLE IF NOT EXISTS reply_alias_start(slot INTEGER PRIMARY KEY, seq INTEGER NOT NULL)")
     high = queue.execute("SELECT coalesce(max(seq),0) FROM receipts").fetchone()[0]
     db.execute("INSERT OR IGNORE INTO reply_alias_start VALUES(1,?)", (high,))
@@ -62,6 +63,6 @@ def extend(queue, db, read, cfg, ledger):
     if not team_aliases(queue, db, read):
         return
     seen = {(p["pn"], p["lid"]) for p in cfg["pairs"]}
-    for pn, lid in sorted(verified_pairs(ledger, lambda attempt: receipt_authority(CONFIG, attempt, 0), time.time()) - seen):
+    for pn, lid in sorted(verified_pairs(ledger, lambda row: authority(CONFIG, row, 0), time.time()) - seen):
         db.execute("INSERT OR IGNORE INTO team_events SELECT ?,mid,stamp FROM reply_team_alias WHERE alias IN (?,?)", (pn, pn, lid))
         cfg["pairs"].append({"pn": pn, "lid": lid})

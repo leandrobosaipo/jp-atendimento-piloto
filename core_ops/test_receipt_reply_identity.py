@@ -13,7 +13,8 @@ class ReplyIdentityTests(unittest.TestCase):
         pn, lid = cap.digest("123@s.whatsapp.net"), cap.digest("456@lid")
         for idx, state in enumerate(("accepted", "read", "delivered")):
             ledger.execute("INSERT INTO dispatch_attempts VALUES(?,?,?,?,?)", (str(idx), "m"+str(idx), "123@s.whatsapp.net", state, 1000))
-        def authority(attempt):
+        def authority(row):
+            attempt=row['attempt']
             return "jp", dict(instance="jp", native="m"+attempt, attempt=attempt, pn=pn, lid=lid, reverse_pn=pn, forward_lid=lid if attempt=="1" else "wrong")
         self.assertEqual(verified_pairs(ledger, authority, 1001), {(pn,lid)})
         self.assertEqual(verified_pairs(ledger, authority, 1001+9*86400), set())

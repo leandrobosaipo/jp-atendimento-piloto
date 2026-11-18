@@ -8,7 +8,8 @@ ROLE = json.dumps(["7Ur9XdO2FiFEnMhY","42e396aa-41b9-4ca3-be12-f73f66177528","se
 
 
 def project(ledger, db, read, call, conf, root):
-    from dispatch_service import CONFIG, receipt_authority
+    from dispatch_service import CONFIG
+    from receipt_catalog import authority
     from dispatch_receipt import match_event, delivery_state
     scope = json.loads((conf / "central-receipt-scope.json").read_bytes())
     db.execute("CREATE TABLE IF NOT EXISTS central_projected(record TEXT PRIMARY KEY, attempt TEXT NOT NULL)")
@@ -23,7 +24,7 @@ def project(ledger, db, read, call, conf, root):
             continue
         meta, raw = read(record)
         target = dict(attempt=attempt,native=native,destination=destination,attempted=stamp)
-        row = match_event((meta,raw),target,"messages.update",*receipt_authority(CONFIG,attempt,0))
+        row = match_event((meta,raw),target,"messages.update",*authority(CONFIG,target,0))
         if delivery_state(row)!=kind:
             raise ValueError("physical_receipt_mismatch")
         proof=dict(record=record,attempt=attempt,native=native,source=source,at=meta["receivedAt"],kind=kind)
