@@ -1,0 +1,22 @@
+import assert from 'node:assert/strict';
+import test from 'node:test';
+import {createHash} from 'node:crypto';
+import {records} from './dispatch.mjs';
+import {projectReceipt} from './central_receipt.mjs';
+const hash=s=>createHash('sha256').update(s).digest('hex');
+test('authenticated receipt changes delivery only and preserves duplicate and read semantics',()=>{
+  const row={message_id:'native123',attempt_id:'a',initial_plan_id:'plan',destination_e164:'+5511999999999',content_sha256:hash('oi'),status:'provider_accepted',attempted_at:'2026-11-18T12:00:00Z'};
+  const plan={plan_id:'plan',status:'provider_accepted'},state={version:1,initial_confirmations:[plan],individual_dispatches:[row]};
+  const h={load:()=>state,save:()=>{}}, transport=records(state)[0];
+  const proof={record:'a'.repeat(64),attempt:transport.id,source:transport.event,native:'native123',at:'2026-11-18T12:01:00Z',kind:'delivered'};
+  assert.equal(projectReceipt(h,proof.record,{...proof,source:hash('other')}).applied,false);
+  assert.equal(projectReceipt(h,proof.record,proof).changed,true);
+  assert.equal(projectReceipt(h,proof.record,proof).changed,false);
+  const read={...proof,kind:'read',record:'b'.repeat(64),at:'2026-11-18T12:02:00Z'};
+  assert.equal(projectReceipt(h,read.record,read).changed,true);
+  assert.equal(projectReceipt(h,proof.record,proof).changed,false);
+  assert.equal(row.delivery_status,'read');
+  assert.equal(plan.delivered_at,proof.at);
+  assert.equal(plan.status,'provider_accepted');
+  assert.equal(state.version,3);
+});

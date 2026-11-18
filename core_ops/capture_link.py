@@ -184,4 +184,9 @@ def deliver(queue, db, read, execution):
         from public_requests import publish
         with sqlite3.connect(LEDGER.as_uri()+'?mode=ro',uri=True) as ledger:
             publish(ROOT,CONF,db,queue,ledger,read,execution)
-    return {'processed':len(rows),'outcomes':outcomes,'reschedule_grants':issued}
+            from central_receipt import project
+            try:
+                receipt_status=project(ledger,db,read,call,CONF,ROOT)
+            except (OSError, ValueError, RuntimeError, sqlite3.Error) as error:
+                receipt_status={'held':type(error).__name__}
+    return {'processed':len(rows),'outcomes':outcomes,'reschedule_grants':issued,'delivery':receipt_status}

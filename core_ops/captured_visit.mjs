@@ -171,13 +171,17 @@ export function serveCapture(h){
   const server=http.createServer(async(req,res)=>{
     const answer=(s,o)=>{res.writeHead(s,{'content-type':'application/json'});res.end(JSON.stringify(o));};
     const auth=Buffer.from(String(req.headers.authorization||'')),expected=Buffer.from('Bearer '+token);
-    if(req.method!=='POST'||!['/consume','/preview','/check','/pending','/reschedule-proposal'].includes(req.url)||auth.length!==expected.length||!timingSafeEqual(auth,expected))return answer(403,{error:'denied'});
+    if(req.method!=='POST'||!['/consume','/preview','/check','/pending','/reschedule-proposal','/delivery-status'].includes(req.url)||auth.length!==expected.length||!timingSafeEqual(auth,expected))return answer(403,{error:'denied'});
     if(req.url==='/check')return answer(200,{scope:'jp_new_replies'});
     if(busy)return answer(503,{error:'busy'});
     busy=true;
     try{
       let raw='';for await(const b of req){raw+=b;if(raw.length>16384)throw Error('too_large');}
       const input=JSON.parse(raw);
+      if(req.url==='/delivery-status'){
+        const {loadReceipt,projectReceipt}=await import('./central_receipt.mjs');
+        return answer(200,projectReceipt(h,input.record,loadReceipt()));
+      }
       if(req.url==='/pending'){
         const {pendingCapturedWork}=await import('./captured_confirmation.mjs');
         return answer(200,{actionPending:pendingCapturedWork(h,input.cutoff)});
