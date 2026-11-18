@@ -30,6 +30,29 @@ def subject(text):
         return 'models'
     return None
 
+def operator_questions(kb):
+    """Each public FAQ has a single subject and operator-authored example questions."""
+    topics={}
+    for entry in kb['entries']:
+        topic=entry['id']
+        if not re.fullmatch(r'faq-publica-[a-z0-9-]{1,45}',topic):continue
+        questions=[k.partition(':')[2].strip() for k in entry.get('keywords',[]) if k.startswith('pergunta:')]
+        if not questions or not all(informational(q) for q in questions):continue
+        topics[topic]=(topic,questions[0]+' Resuma em uma frase curta.',{plain(q).strip(' ?!.') for q in questions})
+    return topics
+
+def informational(q):
+    q=plain(q).strip(' ?!.')
+    return bool(len(q)<=90 and re.fullmatch(r'(?:como|onde|quais?|o que|que tipos?) [a-z ]+',q)
+                and not re.search(r'\b(nao|preco|valor|custa|pago|pagamento|desconto|clube|dor|coceira|ferida|saude|pele|cola|remover|medicamento|agenda\w*|remarc\w*|amanha|hoje|vaga|horario|cancel\w*|atendente|humano|reclam\w*|cadastro|clientes|telefone|pix|divulgacao|parceria|confirm\w*)\b',q))
+
+def resolve(text, conf):
+    topic=subject(text)
+    if topic or not informational(text) or not (conf/'published-answers.json').exists():return topic
+    value=plain(text).strip(' ?!.')
+    matches=[k for k,v in operator_questions(json.loads((BASE/'kb.json').read_bytes())).items() if value in v[2]]
+    return matches[0] if len(matches)==1 else None
+
 def revision():
     h = hashlib.sha256()
     for name in ('kb.json','operator-instructions.json'):
@@ -44,7 +67,7 @@ def gateway(payload):
         return json.loads(peer.makefile('rb').readline(16385))
 
 def checked(result, topic, version):
-    source, _ = QUESTIONS[topic]
+    source=QUESTIONS[topic][0] if topic in QUESTIONS else topic
     if result.get('status')!='ok' or result.get('decision')!='answer' or result.get('kb_version')!=version:
         return None
     ids={r['id'] for r in result.get('sources',[]) if isinstance(r,dict) and 'id' in r}
@@ -60,7 +83,9 @@ def prepare(topic):
     path=CACHE/(rev+'-'+topic+'.json')
     if path.exists():return
     kb=json.loads((BASE/'kb.json').read_bytes())
-    source,question=QUESTIONS[topic]
+    definition=QUESTIONS.get(topic) or operator_questions(kb).get(topic)
+    if not definition:return
+    source,question=definition[:2]
     key='published-answer-v1/'+rev+'/'+topic
     result=gateway(dict(op='ask',id=str(uuid.uuid5(uuid.NAMESPACE_URL,key)),session=str(uuid.uuid5(uuid.NAMESPACE_URL,key+'/session')),text=question))
     if revision()!=rev:return
@@ -80,11 +105,24 @@ def observe(db, rev, topic, seq, execution):
     first=db.execute('SELECT first_seq FROM kb_observation WHERE revision=? AND topic=?',(rev,topic)).fetchone()[0]
     return seq>first
 
+def contextual_question(text,seq,stamp,jid,aliases,db,ledger):
+    """Resolve a short price follow-up only after our own delivered maintenance reply."""
+    if plain(text).strip(' ?!.') not in {'e o valor','e o preco','e quanto custa','quanto custa','qual o valor'}:return text
+    if not db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='kb_proposals'").fetchone():return text
+    rows=db.execute("SELECT seq,message_id,address_hashes FROM captured WHERE seq<? ORDER BY seq DESC LIMIT 60",(seq,))
+    last=next(((n,mid) for n,mid,raw in rows if aliases.intersection(json.loads(raw))),None)
+    if not last or not db.execute("SELECT 1 FROM kb_proposals WHERE seq=? AND topic='maintenance'",(last[0],)).fetchone():return text
+    source=hashlib.sha256(json.dumps(['central-event-v1','reply',last[1]],separators=(',',':')).encode()).hexdigest()
+    latest=ledger.execute('SELECT source,state,native,attempted FROM dispatch_attempts WHERE destination=? AND attempted BETWEEN ? AND ? ORDER BY attempted DESC LIMIT 2',(jid,int(stamp)-1800,int(stamp))).fetchall()
+    if not latest or latest[0][0]!=source or latest[0][1] not in ('delivered','read') or (len(latest)>1 and latest[0][3]==latest[1][3]):return text
+    if any(db.execute('SELECT 1 FROM team_events WHERE pn=? AND stamp>=? AND mid<>? LIMIT 1',(alias,latest[0][3],latest[0][2])).fetchone() for alias in aliases):return text
+    return 'Qual o valor da manutenção?'
+
 def candidate(text, seq, execution, db, conf):
-    topic=subject(text)
+    topic=resolve(text,conf)
     if not topic:return None
     policy=json.loads((conf/'published-answers.json').read_bytes())
-    if seq<=policy['after'] or topic not in policy['topics']:return None
+    if seq<=policy['after'] or (topic not in policy['topics'] and not topic.startswith('faq-publica-')):return None
     rev=revision()
     path=CACHE/(rev+'-'+topic+'.json')
     if not path.exists():
@@ -106,7 +144,7 @@ if __name__=='__main__':
         with peer:
             peer.settimeout(1)
             try:
-                topic=peer.makefile('rb').readline(32).decode().strip()
-                if topic in QUESTIONS:prepare(topic)
+                topic=peer.makefile('rb').readline(64).decode().strip()
+                if topic in QUESTIONS or re.fullmatch(r'faq-publica-[a-z0-9-]{1,45}',topic):prepare(topic)
             except (OSError,ValueError,KeyError) as exc:
                 print('knowledge held',type(exc).__name__,flush=True)

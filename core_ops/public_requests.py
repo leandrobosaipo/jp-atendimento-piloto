@@ -144,14 +144,15 @@ def publish(root,conf,db,queue,ledger,read,execution):
         if intervened:continue
         learned=None
         try:
-            from published_answers import candidate,subject
-            if not exception and subject(text) and (conf/'published-answers.json').is_file():
+            from published_answers import candidate,contextual_question,resolve
+            if not exception and (conf/'published-answers.json').is_file() and resolve(text,conf):
                 if not operator_available(seq):continue
                 learned=candidate(text,seq,execution,db,conf)
                 if not learned:continue
                 answer=learned['answer']
             else:
-                answer=PREFERENCE if exception else plan(text,config,slot_query,dt.datetime.now(CUIABA).date())
+                question=contextual_question(text,seq,stamp,jid,aliases,db,ledger) if not exception and (conf/'published-answers.json').is_file() else text
+                answer=PREFERENCE if exception else plan(question,config,slot_query,dt.datetime.now(CUIABA).date())
             if not answer or not operator_available(seq):continue
         except (OSError,ValueError,http.client.HTTPException):
             # The private case remains open. Continue processing unrelated agenda replies.

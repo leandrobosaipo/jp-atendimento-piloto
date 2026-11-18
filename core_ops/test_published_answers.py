@@ -13,6 +13,31 @@ class Coverage(unittest.TestCase):
         for value in ('Quais modelos vocês têm e qual o preço?', 'Tenho dor, como funciona a manutenção?', 'Confirmo','Pode ser amanhã?', 'Não me procurem','Quero falar com a equipe'):
             self.assertIsNone(kb.subject(value))
 
+    def test_operator_questions(self):
+        entry=dict(id='faq-publica-recepcao',keywords=['pergunta: Onde fica a recepção?','pergunta: Onde encontro a recepção?'])
+        self.assertIn('onde fica a recepcao',kb.operator_questions({'entries':[entry]})[entry['id']][2])
+        entry['keywords'].append('pergunta: Qual o valor do clube?')
+        self.assertFalse(kb.operator_questions({'entries':[entry]}))
+
+    def test_context_requires_delivered_same_customer_without_human(self):
+        db=sqlite3.connect(':memory:')
+        db.executescript("""CREATE TABLE captured(seq,message_id,address_hashes);
+        CREATE TABLE kb_proposals(seq,topic);
+        CREATE TABLE dispatch_attempts(source,state,native,attempted,destination);
+        CREATE TABLE team_events(pn,stamp,mid);
+        INSERT INTO captured VALUES(1,'request','["person"]');
+        INSERT INTO kb_proposals VALUES(1,'maintenance');""")
+        source=kb.hashlib.sha256(b'["central-event-v1","reply","request"]').hexdigest()
+        db.execute("INSERT INTO dispatch_attempts VALUES(?,'accepted','notice',100,'one')",(source,))
+        def lookup(person='person'):
+            return kb.contextual_question('E quanto custa?',2,140,'one',{person},db,db)
+        self.assertEqual(lookup(),'E quanto custa?')
+        db.execute("UPDATE dispatch_attempts SET state='delivered'")
+        self.assertIn('manutenção',lookup())
+        self.assertEqual(lookup('another'),'E quanto custa?')
+        db.execute("INSERT INTO team_events VALUES('person',102,'human')")
+        self.assertEqual(lookup(),'E quanto custa?')
+
     def test_publication_and_no_replay(self):
         with tempfile.TemporaryDirectory() as folder:
             base=Path(folder)
