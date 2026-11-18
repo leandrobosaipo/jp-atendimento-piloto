@@ -48,7 +48,8 @@ def make_event(row, read, cfg, outbound):
     assert env['instance']==cap.INSTANCE and msg['key']['fromMe'] is False and msg['key']['id']==row['message_id']
     kind,disposition,quote,content=cap.classify(msg.get('message') or {})
     assert kind==row['kind'] and quote==row['quoted_id']
-    pn=identity(msg,cfg['pairs'])
+    pairs = cfg['pairs'] if row['seq'] > cfg.get('receiptPairStart', 0) else cfg.get('originalPairs', cfg['pairs'])
+    pn=identity(msg,pairs)
     received=dt.datetime.fromisoformat(meta['receivedAt'].replace('Z','+00:00'))
     stamp=msg.get('messageTimestamp');trusted=False;at=received
     if isinstance(stamp,(int,float,str)) and str(stamp).isdigit():
@@ -105,10 +106,11 @@ def notify_triage():
     except (OSError,ValueError,KeyError,http.client.HTTPException):
         return {'ready':True,'pending':True}
 
-def has_newer_identity(db, row, person):
+def has_newer_identity(db, row, person, pairs=()):
     """The capture schema stores aliases, never a plaintext/hash pn column."""
     rows=db.execute('SELECT address_hashes FROM captured WHERE seq>? OR (seq=? AND rowid>?)',(row['seq'],row['seq'],row['rowid'])).fetchall()
-    return any(person in json.loads(raw) for raw, in rows)
+    aliases = {person} | {p['lid'] for p in pairs if p['pn'] == person}
+    return any(aliases.intersection(json.loads(raw)) for raw, in rows)
 
 def issue_ready_reschedules(db, read, cfg, outbound):
     """Poll persisted human-review captures; never depend on the consume tick.
@@ -134,7 +136,7 @@ def issue_ready_reschedules(db, read, cfg, outbound):
         def latest_is_source(p):
             return (int(p.get('capture_sequence',-1))==int(row['seq']) and p.get('message_id')==row['message_id']
               and p.get('fingerprint')==row['content_sha256']
-              and not has_newer_identity(db,row,p.get('person'))
+              and not has_newer_identity(db,row,p.get('person'),cfg['pairs'])
               and not db.execute('SELECT 1 FROM team_events WHERE pn=? AND stamp>=?',(event['pn'],dt.datetime.fromisoformat(event['at']).timestamp())).fetchone())
         if issue_reschedule(ROOT,CONF,proposal,latest_is_source=latest_is_source):issued+=1
     return issued
@@ -146,6 +148,8 @@ def deliver(queue, db, read, execution):
         caught_up=index_team_events(queue,db,read,cfg)
         if not caught_up:return {'processed':0,'index_catching_up':True}
         with sqlite3.connect(LEDGER.as_uri()+'?mode=ro',uri=True) as ledger:
+            from receipt_reply_identity import extend
+            extend(queue,db,read,cfg,ledger)
             valid=ledger.execute("""SELECT native,destination,attempted,state FROM dispatch_attempts WHERE
                 state IN ('accepted','delivered','read') AND native IS NOT NULL AND attempted>=?""",(int(time.time())-9*86400,)).fetchall()
             cfg['delivered']=set(cfg['delivered'])|{mid for mid,_,_,status in valid if status in ('delivered','read')}
@@ -160,6 +164,8 @@ def deliver(queue, db, read, execution):
         outcomes={}
         for row in rows:
             event=make_event(row,read,cfg,outbound)
+            if event['pn'] and has_newer_identity(db,row,event['pn'],cfg['pairs']):
+                event['conflict']=True
             question=cfg.get('questionAnswers',{}).get(event['mid'])
             addressed=cfg.get('addressedYes',{}).get(event['mid'])==event['content'] and event['disposition']=='review'
             if question and question[0]==event['latestDelivered'] and (addressed or event['disposition'] in ('group_all','group_'+str(question[1]))):
