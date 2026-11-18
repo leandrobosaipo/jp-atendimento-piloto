@@ -90,7 +90,14 @@ export async function consumeVisit(event, h, preview=false) {
     && !previous.some(v=>v.mid!==event.mid);
   const confirmRequest=grantable ? {key,client:target.candidate.client_code,phone:target.candidate.destination_e164,
     ids:appointments,notice,at:event.at} : null;
-  if (receipt && receipt.status===status) return {status,members:appointments.length,confirmRequest};
+  if (receipt && receipt.status===status) {
+    if (grantable && !receipt.confirmationEvidence) {
+      receipt.confirmationEvidence={event,snapshots:target.members.map(h.snapshot)};
+      state.version++;
+      h.save(state);
+    }
+    return {status,members:appointments.length,confirmRequest};
+  }
   seen[key]={key,status,mid:event.mid,at:event.at,kind:event.kind,record:event.record,notice:notice||null,appointments,checkedAt:new Date().toISOString()};
   if(status==='human_review')seen[key].sourceEvent=event;
   if(grantable)seen[key].confirmationEvidence={event,snapshots:target.members.map(h.snapshot)};
