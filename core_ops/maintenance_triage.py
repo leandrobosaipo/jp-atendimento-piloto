@@ -60,13 +60,42 @@ def calculate(execution_id):
     target=ROOT/'cohort-maintenance-15-90-n8n.json'
     today=dt.datetime.now(ZoneInfo('America/Cuiaba')).date()
     holds=set(json.loads(SETTINGS.read_bytes())['held'])
+    future,fh=_request('/pages/relatorios/buscaListaAgendamento.php',{'profissional':'','servico':'','cliente':'','dataini':today.strftime('%d/%m/%Y'),'datafim':(today+dt.timedelta(days=365)).strftime('%d/%m/%Y'),'tipo':'1'})
+    # Compare appointment identities and times. The report can include unrelated
+    # presentation fields that change between identical business snapshots.
+    agenda={}
+    groups=defaultdict(list)
+    for visit in future:
+        appt=str(visit.get('Age_Codigo') or '')
+        item=str(visit.get('CIt_Codigo') or '')
+        customer=_code(visit)
+        service=str(visit.get('Ser_Codigo') or '')
+        professional=str(visit.get('ProCodigo') or '')
+        when=dt.datetime.strptime(visit['Age_Dat_Inicio'],'%d/%m/%Y %H:%M')
+        if not all((appt,item,customer,service,professional)):
+            raise ValueError('appointment_identity_incomplete')
+        identity=(customer,service,professional,when.isoformat())
+        if (appt,item) in agenda:
+            if agenda[appt,item]!=identity:raise ValueError('appointment_identity_conflict')
+            continue
+        agenda[appt,item]=identity
+        label=str(visit.get('Ser_Descricao') or '').casefold()
+        if 'manuten' in label and ('prótese' in label or 'protese' in label):
+            groups[customer,service,professional].append((when,appt))
+    signature=hashlib.sha256(json.dumps(sorted(agenda.items())).encode()).hexdigest()
+    overlaps=[]
+    for (customer,service,professional),visits in groups.items():
+        ordered=sorted(set(visits))
+        for first,second in zip(ordered,ordered[1:]):
+            if first[1]!=second[1] and (second[0].date()-first[0].date()).days<=1:
+                overlaps.append({'customer':customer,'service':service,'professional':professional,
+                    'first':first[1],'first_at':first[0].isoformat(),'second':second[1],'second_at':second[0].isoformat()})
     if target.exists():
         prior=json.loads(target.read_bytes())
-        if prior['day']==str(today) and prior.get('held')==sorted(holds) and prior.get('review_policy')=='existing_customer':
+        if prior['day']==str(today) and prior.get('held')==sorted(holds) and prior.get('agenda_signature')==signature and prior.get('review_policy')=='existing_customer':
             return {**prior['summary'],'refreshed':False,'source_execution':prior['execution_id']}
     clients,ch=_request('/pages/cadastros/buscaClientes.php',{})
     hist,hh=_request('/pages/relatorios/buscaAgendamentos.php',{'edtDataIni':(today-dt.timedelta(days=90)).strftime('%d/%m/%Y'),'edtDataFim':(today-dt.timedelta(days=1)).strftime('%d/%m/%Y'),'tipoStatus':'','AgeCliente':'','AgeProfissional':'','AgeServico':''})
-    future,fh=_request('/pages/relatorios/buscaListaAgendamento.php',{'profissional':'','servico':'','cliente':'','dataini':today.strftime('%d/%m/%Y'),'datafim':(today+dt.timedelta(days=365)).strftime('%d/%m/%Y'),'tipo':'1'})
     all_dates=defaultdict(list); maintenance=defaultdict(list); unattributed=0
     for row in hist:
         key,when=_code(row),_date(row)
@@ -88,5 +117,6 @@ def calculate(execution_id):
     rows.sort(key=lambda x:(x['days_since'],x['name'] or ''))
     counts=dict(Counter(x['reason'] for x in rows))
     summary={'candidates':len(rows),'customers':len(names),'reasons':counts,'history_rows':len(hist),'future_rows':len(future),'older_rows_without_customer':unattributed}
-    save(target,{'day':str(today),'review_policy':'existing_customer','generated_at':dt.datetime.now(dt.timezone.utc).isoformat(),'execution_id':execution_id,'held':sorted(holds),'sources':{'clients':ch,'history':hh,'future':fh},'summary':summary,'rows':rows})
+    summary['nearby_maintenance_pairs']=len(overlaps)
+    save(target,{'day':str(today),'review_policy':'existing_customer','agenda_signature':signature,'nearby_maintenance_pairs':overlaps,'generated_at':dt.datetime.now(dt.timezone.utc).isoformat(),'execution_id':execution_id,'held':sorted(holds),'sources':{'clients':ch,'history':hh,'future':fh},'summary':summary,'rows':rows})
     return {**summary,'refreshed':True,'source_execution':execution_id}
