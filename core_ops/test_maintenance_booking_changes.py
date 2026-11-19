@@ -16,6 +16,8 @@ class BookingChanges(unittest.TestCase):
         directory = [{"Codigo": str(i), "Nome": f"Fixture {i}"} for i in range(101)]
         history = [{"CodCliente": "5", "DataIni": (today-dt.timedelta(days=20)).strftime("%d/%m/%Y"),
                     "Status": "title='Realizado'", "Servico": "Manutenção de prótese"}]
+        history.append(dict(history[0], DataIni=(today-dt.timedelta(days=2)).strftime("%d/%m/%Y"),
+                            Status="title='Cancelado'"))
 
         def booking(customer, appointment, days):
             return dict(CliCodigo=customer, Age_Codigo=appointment, CIt_Codigo=appointment,

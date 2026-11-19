@@ -92,7 +92,7 @@ def calculate(execution_id):
                     'first':first[1],'first_at':first[0].isoformat(),'second':second[1],'second_at':second[0].isoformat()})
     if target.exists():
         prior=json.loads(target.read_bytes())
-        if prior['day']==str(today) and prior.get('held')==sorted(holds) and prior.get('agenda_signature')==signature and prior.get('review_policy')=='existing_customer':
+        if prior['day']==str(today) and prior.get('held')==sorted(holds) and prior.get('agenda_signature')==signature and prior.get('history_basis')=='attended' and prior.get('review_policy')=='existing_customer':
             return {**prior['summary'],'refreshed':False,'source_execution':prior['execution_id']}
     clients,ch=_request('/pages/cadastros/buscaClientes.php',{})
     hist,hh=_request('/pages/relatorios/buscaAgendamentos.php',{'edtDataIni':(today-dt.timedelta(days=90)).strftime('%d/%m/%Y'),'edtDataFim':(today-dt.timedelta(days=1)).strftime('%d/%m/%Y'),'tipoStatus':'','AgeCliente':'','AgeProfissional':'','AgeServico':''})
@@ -103,9 +103,10 @@ def calculate(execution_id):
         if not key:
             unattributed+=1
             continue
+        if "title='Realizado'" not in str(row.get('Status') or ''):continue
         all_dates[key].append(when)
         service=str(row.get('Servico') or '').lower()
-        if "title='Realizado'" in str(row.get('Status') or '') and 'manuten' in service and ('prótese' in service or 'protese' in service): maintenance[key].append(when)
+        if 'manuten' in service and ('prótese' in service or 'protese' in service): maintenance[key].append(when)
     booked={_code(x) for x in future}; names={_code(x):str(x.get('Nome') or x.get('Cli_Nome') or '').strip() for x in clients}; consent=_consents(); rows=[]
     if '' in booked or '' in names or len(names)<100 or not set(holds)<=names.keys():raise ValueError('directory_incomplete')
     for key,dates in maintenance.items():
@@ -118,5 +119,5 @@ def calculate(execution_id):
     counts=dict(Counter(x['reason'] for x in rows))
     summary={'candidates':len(rows),'customers':len(names),'reasons':counts,'history_rows':len(hist),'future_rows':len(future),'older_rows_without_customer':unattributed}
     summary['nearby_maintenance_pairs']=len(overlaps)
-    save(target,{'day':str(today),'review_policy':'existing_customer','agenda_signature':signature,'nearby_maintenance_pairs':overlaps,'generated_at':dt.datetime.now(dt.timezone.utc).isoformat(),'execution_id':execution_id,'held':sorted(holds),'sources':{'clients':ch,'history':hh,'future':fh},'summary':summary,'rows':rows})
+    save(target,{'day':str(today),'review_policy':'existing_customer','history_basis':'attended','agenda_signature':signature,'nearby_maintenance_pairs':overlaps,'generated_at':dt.datetime.now(dt.timezone.utc).isoformat(),'execution_id':execution_id,'held':sorted(holds),'sources':{'clients':ch,'history':hh,'future':fh},'summary':summary,'rows':rows})
     return {**summary,'refreshed':True,'source_execution':execution_id}
