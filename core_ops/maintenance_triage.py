@@ -62,7 +62,7 @@ def calculate(execution_id):
     holds=set(json.loads(SETTINGS.read_bytes())['held'])
     if target.exists():
         prior=json.loads(target.read_bytes())
-        if prior['day']==str(today) and prior.get('held')==sorted(holds):
+        if prior['day']==str(today) and prior.get('held')==sorted(holds) and prior.get('review_policy')=='existing_customer':
             return {**prior['summary'],'refreshed':False,'source_execution':prior['execution_id']}
     clients,ch=_request('/pages/cadastros/buscaClientes.php',{})
     hist,hh=_request('/pages/relatorios/buscaAgendamentos.php',{'edtDataIni':(today-dt.timedelta(days=90)).strftime('%d/%m/%Y'),'edtDataFim':(today-dt.timedelta(days=1)).strftime('%d/%m/%Y'),'tipoStatus':'','AgeCliente':'','AgeProfissional':'','AgeServico':''})
@@ -83,10 +83,10 @@ def calculate(execution_id):
         last=max(dates); age=(today-last).days
         if key in booked or not 15<=age<=90 or any((today-d).days<15 for d in all_dates[key]): continue
         status=consent.get(key,'unknown')
-        reason='pending_individual' if key in holds else 'review_conversation_and_capacity' if status=='opted_in' else 'opted_out' if status=='opted_out' else 'consent_unverified'
+        reason='pending_individual' if key in holds else 'opted_out' if status=='opted_out' else 'review_conversation_and_capacity'
         rows.append({'client_code':key,'name':names.get(key),'last_maintenance':str(last),'days_since':age,'consent':status,'reason':reason})
     rows.sort(key=lambda x:(x['days_since'],x['name'] or ''))
     counts=dict(Counter(x['reason'] for x in rows))
     summary={'candidates':len(rows),'customers':len(names),'reasons':counts,'history_rows':len(hist),'future_rows':len(future),'older_rows_without_customer':unattributed}
-    save(target,{'day':str(today),'generated_at':dt.datetime.now(dt.timezone.utc).isoformat(),'execution_id':execution_id,'held':sorted(holds),'sources':{'clients':ch,'history':hh,'future':fh},'summary':summary,'rows':rows})
+    save(target,{'day':str(today),'review_policy':'existing_customer','generated_at':dt.datetime.now(dt.timezone.utc).isoformat(),'execution_id':execution_id,'held':sorted(holds),'sources':{'clients':ch,'history':hh,'future':fh},'summary':summary,'rows':rows})
     return {**summary,'refreshed':True,'source_execution':execution_id}

@@ -30,7 +30,7 @@ def choose_day(text,today):
     days=[i for i,d in enumerate(weekdays) if re.search(r'\b'+d+r'\b',text)]
     if len(days)==1:return today+dt.timedelta(days=(days[0]-today.weekday())%7 or 7)
 
-def plan(text,config,query,today):
+def plan(text,config,query,today,offer_options=False):
     integration='/usr/local/libexec/atendimento-piloto-integracao'
     if integration not in sys.path:sys.path.append(integration)
     from policy import classify,artwork_quote
@@ -50,6 +50,18 @@ def plan(text,config,query,today):
         date=choose_day(words,today)
         if not service:return 'Qual serviço você gostaria de agendar?'
         if date is None:return price+'Qual dia ou período você prefere para esse serviço?'
+        if not prof and offer_options and not re.search(r'\b(com|apenas|somente|preferencia)\b',words):
+            options=[]
+            for slug in ('pedro','alysson'):
+                professional=config['professionals'].get(slug)
+                if not professional or professional.get('human_only'):continue
+                facts=query(dict(service_key=service,professional_key=slug,date=date.isoformat()))
+                if facts.get('status')!='ok' or facts.get('date')!=date.isoformat():continue
+                times=[v for v in facts.get('slots',[]) if isinstance(v,str) and re.fullmatch(r'(?:[01]\d|2[0-3]):[0-5]\d',v)]
+                if 'a tarde' in words:times=[v for v in times if '13:00'<=v<'18:00']
+                if 'de manha' in words:times=[v for v in times if v<'12:00']
+                if times:options.append(min(times)+' com '+professional['name'])
+            if options:return f"Para {date:%d/%m}, tenho "+' ou '.join(options)+'. Qual você prefere?'
         if not prof:return price+'Você tem preferência de profissional para esse dia?'
         if config['professionals'][prof].get('human_only'):return None
         facts=query(dict(service_key=service,professional_key=prof,date=date.isoformat()))
@@ -152,7 +164,9 @@ def publish(root,conf,db,queue,ledger,read,execution):
                 answer=learned['answer']
             else:
                 question=contextual_question(text,seq,stamp,jid,aliases,db,ledger) if not exception and (conf/'published-answers.json').is_file() else text
-                answer=PREFERENCE if exception else plan(question,config,slot_query,dt.datetime.now(CUIABA).date())
+                if not exception and question==text:
+                    question=booking_continuation(text,seq,stamp,jid,aliases,db,ledger,read,config)
+                answer=PREFERENCE if exception else plan(question,config,slot_query,dt.datetime.now(CUIABA).date(),offer_options=question!=text)
             if not answer or not operator_available(seq):continue
         except (OSError,ValueError,http.client.HTTPException):
             # The private case remains open. Continue processing unrelated agenda replies.
@@ -177,3 +191,23 @@ def publish(root,conf,db,queue,ledger,read,execution):
 
 def as_list(value):
     return value if isinstance(value,list) else [value]
+
+def booking_continuation(text,seq,stamp,jid,aliases,db,ledger,read,config):
+    """A short service answer belongs only to our preceding scheduling question."""
+    if normal(text).strip(' .!') not in ('manutencao','manutencao de protese','manutencao de protese capilar','corte','barba'):
+        return text
+    import hashlib
+    previous=next((r for r in db.execute('SELECT message_id,record_id,envelope_pos,item_pos,address_hashes FROM captured WHERE seq<? ORDER BY seq DESC LIMIT 60',(seq,)) if aliases.intersection(json.loads(r[4]))),None)
+    if not previous:return text
+    mid,rid,ei,mi,_=previous
+    source=hashlib.sha256(json.dumps(['central-event-v1','reply',mid],separators=(',',':')).encode()).hexdigest()
+    attempts=ledger.execute('SELECT source,native,attempted,state FROM dispatch_attempts WHERE destination=? AND attempted BETWEEN ? AND ? ORDER BY attempted DESC LIMIT 2',(jid,int(stamp)-1800,int(stamp))).fetchall()
+    if not attempts or attempts[0][0]!=source or not attempts[0][1] or attempts[0][3] not in ('accepted','delivered','read'):return text
+    if any(db.execute('SELECT 1 FROM team_events WHERE pn=? AND stamp>=? AND mid<>? LIMIT 1',(a,attempts[0][2],attempts[0][1])).fetchone() for a in aliases):return text
+    env=as_list(read(rid)[1])[ei];row=as_list(env['data'])[mi];key=row.get('key') or {}
+    if key.get('id')!=mid or key.get('remoteJid')!=jid or key.get('fromMe') is not False:return text
+    msg=row.get('message') or {};prior=msg.get('conversation') or (msg.get('extendedTextMessage') or {}).get('text')
+    if not isinstance(prior,str) or len(prior)>300:return text
+    today=dt.datetime.fromtimestamp(stamp,CUIABA).date()
+    if plan(prior,config,lambda _: {},today)!='Qual serviço você gostaria de agendar?':return text
+    return prior+' '+text

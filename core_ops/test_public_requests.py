@@ -17,3 +17,6 @@ assert plan('Quero cancelar o horário',cfg,query,today) is None
 assert plan('👍',cfg,query,today) is None
 compound=plan('Qual o preço da manutenção e tem vaga com Pedro amanhã?',cfg,query,today)
 assert '120,00' in compound and '09:00' in compound
+followup=plan('Tem horário amanhã à tarde? Manutenção de prótese',cfg,query,today,offer_options=True)
+assert followup=='Para 17/11, tenho 13:30 com Pedro. Qual você prefere?'
+assert plan('manutenção de prótese',cfg,query,today) is None
