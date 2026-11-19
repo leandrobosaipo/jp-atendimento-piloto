@@ -55,7 +55,10 @@ def plan(text,config,query,today,offer_options=False):
             for slug in ('pedro','alysson'):
                 professional=config['professionals'].get(slug)
                 if not professional or professional.get('human_only'):continue
-                facts=query(dict(service_key=service,professional_key=slug,date=date.isoformat()))
+                params=dict(service_key=service,professional_key=slug,date=date.isoformat())
+                if 'a tarde' in words:params['period']='afternoon'
+                elif 'de manha' in words:params['period']='morning'
+                facts=query(params)
                 if facts.get('status')!='ok' or facts.get('date')!=date.isoformat():continue
                 times=[v for v in facts.get('slots',[]) if isinstance(v,str) and re.fullmatch(r'(?:[01]\d|2[0-3]):[0-5]\d',v)]
                 if 'a tarde' in words:times=[v for v in times if '13:00'<=v<'18:00']

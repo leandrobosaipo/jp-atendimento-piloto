@@ -54,8 +54,9 @@ def query(op, params, config, *, read=None, now=None):
     failure = {'status':'unavailable', 'source':'appbarber', 'observed_at':observed, 'reason':'official_read_unavailable'}
     if op not in ('prices', 'availability') or not isinstance(params, dict):
         return dict(failure, reason='invalid_operation')
-    allowed = {'service_key'} if op == 'prices' else {'service_key', 'date', 'professional_key'}
+    allowed = {'service_key'} if op == 'prices' else {'service_key', 'date', 'professional_key', 'period'}
     if set(params) - allowed: return dict(failure, reason='invalid_parameters')
+    if params.get('period') not in (None,'afternoon','morning'):return dict(failure,reason='invalid_period')
     if not isinstance(params.get('service_key'), str): return dict(failure, reason='unknown_service')
     service = config.get('services', {}).get(params['service_key'])
     if not isinstance(service, dict) or not re.fullmatch(r'\d{1,20}', str(service.get('id', ''))):
@@ -99,6 +100,8 @@ def query(op, params, config, *, read=None, now=None):
             if not re.fullmatch(r'(?:[01]\d|2[0-3]):[0-5]\d(?::[0-5]\d)?', stamp): raise ValueError('invalid_slot')
             local = dt.datetime.combine(date, dt.time.fromisoformat(stamp), ZoneInfo('America/Cuiaba'))
             if local > now.astimezone(ZoneInfo('America/Cuiaba')): slots.append(stamp[:5])
+        if params.get('period')=='afternoon':slots=[v for v in slots if '13:00'<=v<'18:00']
+        if params.get('period')=='morning':slots=[v for v in slots if v<'12:00']
         return {'status':'ok', 'source':'appbarber', 'observed_at':observed, 'service_id':service['id'],
                 'service_key':params['service_key'], 'date':raw_date, 'professional_key':params['professional_key'],
                 'professional_id':pid, 'duration_minutes':int(duration), 'timezone':'America/Cuiaba',

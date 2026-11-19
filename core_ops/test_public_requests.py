@@ -5,7 +5,7 @@ cfg={'services':{'maintenance':{'name':'Manutenção'}},'professionals':{'pedro'
      'catalog':{'service_art_prices':[{'name':'Manutenção','price_cents':12000}],'service_price_by_key':{'maintenance':12000}}}
 today=dt.date(2026,11,16)
 def query(args):
-    assert args==dict(service_key='maintenance',professional_key='pedro',date='2026-11-17')
+    assert {k:v for k,v in args.items() if k!='period'}==dict(service_key='maintenance',professional_key='pedro',date='2026-11-17')
     return dict(status='ok',date=args['date'],slots=['09:00','13:30'])
 
 assert '120,00' in plan('Qual o preço da manutenção?',cfg,query,today)

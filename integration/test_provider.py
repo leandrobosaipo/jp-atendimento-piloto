@@ -26,6 +26,8 @@ class Tests(unittest.TestCase):
         result=query('availability',{'service_key':'maintenance','date':'2026-11-07','professional_key':'one'},CONFIG,read=read,now=NOW)
         self.assertEqual(result['status'],'ok');self.assertEqual(len(result['slots']),8)
         self.assertFalse(result['reservation_performed']);self.assertNotIn('SECRET_SENTINEL',str(result))
+        pm=query('availability',{'service_key':'maintenance','date':'2026-11-07','professional_key':'one','period':'afternoon'},CONFIG,read=read,now=NOW)
+        self.assertEqual(pm['slots'],['13:00','14:00','15:00','16:00','17:00'])
 
     def test_writes_arbitrary_identity_and_out_of_window_are_not_queried(self):
         def fail(*_):self.fail('Unexpected provider request')
