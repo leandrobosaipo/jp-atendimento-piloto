@@ -1,5 +1,11 @@
 # Conversas fictícias no Cockpit
 
+## Expediente usado na consulta de vagas
+
+Edite [expediente-jp.json](expediente-jp.json) para alterar os dias, os intervalos de início ou os fechamentos excepcionais. O provedor Python e a regra de reserva em JavaScript leem esse arquivo. No Dell, a pasta da integração e a pasta de configuração montada na Central apontam para o mesmo arquivo físico. Ao publicar uma nova versão por substituição de arquivo, refaça esse vínculo e confira o resultado pela consulta de vagas e pela decisão de reserva da Central. A janela de contato do n8n é uma configuração diferente.
+
+O AppBarber mantém a jornada própria de cada profissional em **Cadastros → Profissionais → Horários de trabalho**. As exceções de uma data ficam em **Configurações → Funcionamento**. Ao atualizar o expediente, confira as duas telas, as vagas retornadas e as reservas já existentes. Uma reserva em dia fechado continua visível até haver um novo combinado com o cliente.
+
 Esta candidata usa o valor e os qualificadores da arte aprovada. A consulta de disponibilidade permanece no AppBarber. Preços da tabela, opções de planos e outras respostas com texto definido entram no histórico do gateway com zero tokens. Dúvidas livres usam o modelo dentro da cota existente. O registro de decisões descreve também os objetivos das etapas posteriores. [Decisões e homologação](../docs/2026-11-07-decisoes-e-homologacao.md)
 
 Abra **Conversas fictícias**, escolha um dos três clientes de teste e escreva uma mensagem. O histórico mostra os IDs da conversa, da entrada e da saída, a fonte consultada e a tabela anexada. A tela **Teste de atendimento** continua disponível para testar o modelo diretamente.
