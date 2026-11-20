@@ -24,10 +24,16 @@ class Tests(unittest.TestCase):
             self.assertEqual(params,{'servico':'100','profissional':'200','dia':'7','mes':'11','ano':'2026'})
             return {'data':[{'PesCodigoPrincipal':'200','private_name':'SECRET_SENTINEL','horarios':[{'DataIni':f'{h:02}:00','private_phone':'SECRET_SENTINEL'} for h in range(8,20)]}]}
         result=query('availability',{'service_key':'maintenance','date':'2026-11-07','professional_key':'one'},CONFIG,read=read,now=NOW)
-        self.assertEqual(result['status'],'ok');self.assertEqual(len(result['slots']),8)
+        self.assertEqual(result['status'],'ok');self.assertEqual(result['slots'],['08:00','09:00','10:00','11:00','12:00'])
         self.assertFalse(result['reservation_performed']);self.assertNotIn('SECRET_SENTINEL',str(result))
         pm=query('availability',{'service_key':'maintenance','date':'2026-11-07','professional_key':'one','period':'afternoon'},CONFIG,read=read,now=NOW)
-        self.assertEqual(pm['slots'],['13:00','14:00','15:00','16:00','17:00'])
+        self.assertEqual(pm['slots'],[])
+
+    def test_closed_dates_skip_official_slot_lookup(self):
+        for date in ('2026-11-20','2026-11-22','2026-11-23'):
+            r=query('availability',{'service_key':'maintenance','date':date,'professional_key':'one'},CONFIG,
+                    read=lambda *_:self.fail('Closed day queried'),now=NOW+dt.timedelta(days=13))
+            self.assertEqual((r['reason'],r['slots']),('studio_closed',[]))
 
     def test_writes_arbitrary_identity_and_out_of_window_are_not_queried(self):
         def fail(*_):self.fail('Unexpected provider request')

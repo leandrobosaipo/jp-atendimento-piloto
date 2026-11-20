@@ -58,6 +58,7 @@ def install(args):
     for n,b in files.items():newfile(assets/n,b,0o640);os.chown(assets/n,0,gid)
     newfile(ETC/"runtime.json",json.dumps(cfg).encode());newfile(ETC/"assets.json",mf);newfile(ETC/"appbarber-readonly.json",raw);newfile(ETC/"integration.key",cfg["hmac"].encode())
     for n in ("service.py","client.py","policy.py","provider.py"):newfile(BIN/n,(SRC/n).read_bytes(),0o755)
+    newfile(BIN/"expediente-jp.json",(SRC/"expediente-jp.json").read_bytes(),0o644)
     for n in ("manifest.json","index.html","app.js","style.css"):newfile(WEB/n,(SRC/"cockpit"/n).read_bytes(),0o644)
     if not drop.parent.exists():drop.parent.mkdir();drop.parent.chmod(0o755)
     newfile(drop,b"[Service]\nLoadCredential=integration-hmac:/etc/atendimento-piloto-integracao/integration.key\n",0o644)

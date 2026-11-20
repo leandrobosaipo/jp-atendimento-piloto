@@ -152,7 +152,7 @@ def execute(args):
     need(not unit.is_symlink() and unit.read_bytes() == run("git", "-C", str(ROOT), "show", args.integration_commit + ":integration/" + UNIT), "integration_unit_drift")
     need(not (unit.parent / (UNIT + ".d")).exists(), "integration_dropins_require_review")
     # Match installed code independently of the newer panel source revision.
-    for name in ("service.py", "provider.py", "policy.py", "client.py"):
+    for name in ("service.py", "provider.py", "policy.py", "client.py", "expediente-jp.json"):
         path = BIN / name
         need(not path.is_symlink() and path.read_bytes() == run("git", "-C", str(ROOT), "show", args.integration_commit + ":integration/" + name), "installed_integration_drift")
     ai = Path("/usr/local/libexec/atendimento-piloto-ai/gateway.py")

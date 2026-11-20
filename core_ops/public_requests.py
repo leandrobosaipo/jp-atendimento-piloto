@@ -48,6 +48,10 @@ def plan(text,config,query,today,offer_options=False):
             if fact.get('category')=='clarify':return amount
             price=amount+' '
         date=choose_day(words,today)
+        if date is not None:
+            from provider import salon_windows
+            if not salon_windows(date):
+                return price+f'O estúdio está fechado em {date:%d/%m}. Qual outro dia fica bom para você?'
         if not service:return 'Qual serviço você gostaria de agendar?'
         if date is None:return price+'Qual dia ou período você prefere para esse serviço?'
         if not prof and offer_options and not re.search(r'\b(com|apenas|somente|preferencia)\b',words):

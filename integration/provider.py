@@ -6,6 +6,14 @@ import re
 import urllib.parse
 import urllib.request
 from zoneinfo import ZoneInfo
+from pathlib import Path
+
+def salon_windows(date):
+    policy = json.loads(Path(__file__).with_name('expediente-jp.json').read_text())
+    weekday = ('segunda','terca','quarta','quinta','sexta','sabado','domingo')[date.weekday()]
+    if date.isoformat() in policy['fechamentos']:
+        return []
+    return [policy['periodos'][name] for name in policy['semana'][weekday]]
 
 ORIGIN = 'https://sistema.appbarber.com.br'
 PATHS = {
@@ -84,6 +92,10 @@ def query(op, params, config, *, read=None, now=None):
         date = dt.date.fromisoformat(raw_date)
         if not 0 <= (date - now.astimezone(ZoneInfo('America/Cuiaba')).date()).days <= 14:
             return dict(failure, reason='date_outside_test_window')
+        windows = salon_windows(date)
+        if not windows:
+            return dict(status='ok', reason='studio_closed', date=raw_date, slots=[],
+                        source='studio_hours', observed_at=observed, reservation_performed=False)
         catalog = _rows(reader('catalog', {'profissional':pid, 'tipo':'9'}), 'servicos')
         selected = [r for r in catalog if str(r.get('Ser_Codigo')) == service['id'] and str(r.get('TipoItem')) == '1']
         if len(selected) != 1: raise ValueError('service_not_offered')
@@ -99,8 +111,8 @@ def query(op, params, config, *, read=None, now=None):
             stamp = str(slot.get('DataIni', ''))
             if not re.fullmatch(r'(?:[01]\d|2[0-3]):[0-5]\d(?::[0-5]\d)?', stamp): raise ValueError('invalid_slot')
             local = dt.datetime.combine(date, dt.time.fromisoformat(stamp), ZoneInfo('America/Cuiaba'))
-            if local > now.astimezone(ZoneInfo('America/Cuiaba')): slots.append(stamp[:5])
-        if params.get('period')=='afternoon':slots=[v for v in slots if '13:00'<=v<'18:00']
+            if local > now.astimezone(ZoneInfo('America/Cuiaba')) and any(a <= stamp[:5] <= b for a,b in windows): slots.append(stamp[:5])
+        if params.get('period')=='afternoon':slots=[v for v in slots if v>'12:00']
         if params.get('period')=='morning':slots=[v for v in slots if v<'12:00']
         return {'status':'ok', 'source':'appbarber', 'observed_at':observed, 'service_id':service['id'],
                 'service_key':params['service_key'], 'date':raw_date, 'professional_key':params['professional_key'],

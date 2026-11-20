@@ -65,7 +65,7 @@ def update(a):
     catalog["price_source_policy"]="artwork"
     new=old if policy=="artwork" else (json.dumps(catalog,ensure_ascii=False,indent=2)+"\n").encode()
     demand(digest(new)==a.new_manifest,"Target manifest mismatch")
-    mapping={"integration/"+n:BIN/n for n in ("client.py","policy.py","provider.py","service.py")}
+    mapping={"integration/"+n:BIN/n for n in ("client.py","policy.py","provider.py","service.py","expediente-jp.json")}
     mapping.update({"integration/cockpit/"+n:WEB/n for n in ("index.html","manifest.json","style.css","app.js")})
     mapping["assistant_panel/gateway.py"]=AI_BIN/"gateway.py"
     changes={}

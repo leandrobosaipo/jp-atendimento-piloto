@@ -1,0 +1,19 @@
+{
+  "fuso": "America/Cuiaba",
+  "limite": "ultimo_inicio",
+  "semana": {
+    "segunda": [],
+    "terca": ["manha", "tarde"],
+    "quarta": ["manha", "tarde"],
+    "quinta": ["manha", "tarde"],
+    "sexta": ["manha", "tarde"],
+    "sabado": ["sabado"],
+    "domingo": []
+  },
+  "periodos": {
+    "manha": ["09:00", "11:00"],
+    "tarde": ["13:00", "18:00"],
+    "sabado": ["08:00", "12:00"]
+  },
+  "fechamentos": {"2026-11-20": "Feriado informado pelo salão"}
+}
