@@ -130,11 +130,7 @@ def publish(root,conf,db,queue,ledger,read,execution):
     for seq,mid,rid,ei,mi,fp,addresses,received in db.execute(sql,(case['seq'],config['after'],int(config['general']))):
         stamp=dt.datetime.fromisoformat(received.replace('Z','+00:00')).timestamp()
         exception=seq==case['seq'] and rid==case['record'] and mid==case['mid']
-        # A delayed greeting can be released only for the reviewed original message.
-        review=config.get('delayed_greeting',{})
-        delayed=(review.get('record')==rid and review.get('mid')==mid and review.get('fingerprint')==fp
-                 and now<=review.get('until',0))
-        if not 0<=now-stamp<=(86400 if exception else 21600 if delayed else 3600) or exception and now>case['until']:continue
+        if not 0<=now-stamp<=(86400 if exception else 3600) or exception and now>case['until']:continue
         source=cap.digest(json.dumps(['central-event-v1','reply',mid],separators=(',',':')))
         if ledger.execute('SELECT 1 FROM dispatch_attempts WHERE source=? LIMIT 1',(source,)).fetchone():continue
         _,raw=read(rid)
@@ -145,7 +141,6 @@ def publish(root,conf,db,queue,ledger,read,execution):
         if not re.fullmatch(r'55[1-9]\d{9,10}@s\.whatsapp\.net',jid):continue
         if exception and jid!=case['jid']:continue
         kind,disp,quote,text=cap.classify(msg.get('message') or {})
-        if delayed and (not isinstance(text,str) or not greeting(text)):continue
         aliases=set(json.loads(addresses))
         if kind!='text' or quote or not isinstance(text,str) or len(text)>500 or cap.digest(jid) not in aliases:continue
         if cap.digest(json.dumps([kind,disp,quote,text,sorted(aliases)],ensure_ascii=False))!=fp:continue
