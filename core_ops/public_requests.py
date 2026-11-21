@@ -18,6 +18,9 @@ PREFERENCE = 'Para qual dia ou período você gostaria de mudar a manutenção?'
 def normal(value):
     return unicodedata.normalize('NFKD',value.casefold()).encode('ascii','ignore').decode()
 
+def greeting(text):
+    return re.fullmatch(r'(?:oi+|ola|bom dia|boa tarde|boa noite)[ !?.]*', normal(text).strip()) is not None
+
 def choose_day(text,today):
     weekdays=['segunda','terca','quarta','quinta','sexta','sabado','domingo']
     if 'depois de amanha' in text:return today+dt.timedelta(days=2)
@@ -35,6 +38,8 @@ def plan(text,config,query,today,offer_options=False):
     if integration not in sys.path:sys.path.append(integration)
     from policy import classify,artwork_quote
     words=normal(text)
+    if greeting(text):
+        return 'Olá! Você quer agendar um horário ou posso ajudar com alguma dúvida?'
     if re.search(r'\b(nao|nunca|cancele?\w*|reclam\w*|ferida|alerg\w*|sangr\w*|dor|coceira|outro numero|pix|estorno|reembolso|atendente|humano|parceria|divulgacao)\b',words):return None
     options=dict(intent='auto',service='',professional='',date='')
     intent,service,prof,_=classify(text,options,config)
@@ -125,7 +130,11 @@ def publish(root,conf,db,queue,ledger,read,execution):
     for seq,mid,rid,ei,mi,fp,addresses,received in db.execute(sql,(case['seq'],config['after'],int(config['general']))):
         stamp=dt.datetime.fromisoformat(received.replace('Z','+00:00')).timestamp()
         exception=seq==case['seq'] and rid==case['record'] and mid==case['mid']
-        if not 0<=now-stamp<=(86400 if exception else 3600) or exception and now>case['until']:continue
+        # A delayed greeting can be released only for the reviewed original message.
+        review=config.get('delayed_greeting',{})
+        delayed=(review.get('record')==rid and review.get('mid')==mid and review.get('fingerprint')==fp
+                 and now<=review.get('until',0))
+        if not 0<=now-stamp<=(86400 if exception else 21600 if delayed else 3600) or exception and now>case['until']:continue
         source=cap.digest(json.dumps(['central-event-v1','reply',mid],separators=(',',':')))
         if ledger.execute('SELECT 1 FROM dispatch_attempts WHERE source=? LIMIT 1',(source,)).fetchone():continue
         _,raw=read(rid)
@@ -136,6 +145,7 @@ def publish(root,conf,db,queue,ledger,read,execution):
         if not re.fullmatch(r'55[1-9]\d{9,10}@s\.whatsapp\.net',jid):continue
         if exception and jid!=case['jid']:continue
         kind,disp,quote,text=cap.classify(msg.get('message') or {})
+        if delayed and (not isinstance(text,str) or not greeting(text)):continue
         aliases=set(json.loads(addresses))
         if kind!='text' or quote or not isinstance(text,str) or len(text)>500 or cap.digest(jid) not in aliases:continue
         if cap.digest(json.dumps([kind,disp,quote,text,sorted(aliases)],ensure_ascii=False))!=fp:continue

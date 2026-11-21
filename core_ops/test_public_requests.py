@@ -4,6 +4,9 @@ from public_requests import plan,PREFERENCE
 cfg={'services':{'maintenance':{'name':'Manutenção'}},'professionals':{'pedro':{'name':'Pedro','human_only':False}},
      'catalog':{'service_art_prices':[{'name':'Manutenção','price_cents':12000}],'service_price_by_key':{'maintenance':12000}}}
 today=dt.date(2026,11,16)
+for text in ('Bom dia', 'Olá!', 'Oi', 'Boa tarde.'):
+    assert 'agendar' in plan(text,cfg,None,today)
+assert plan('Bom dia, quero falar com um humano',cfg,None,today) is None
 def query(args):
     assert {k:v for k,v in args.items() if k!='period'}==dict(service_key='maintenance',professional_key='pedro',date='2026-11-17')
     return dict(status='ok',date=args['date'],slots=['09:00','13:30'])
