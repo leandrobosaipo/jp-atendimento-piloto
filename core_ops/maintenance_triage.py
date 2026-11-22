@@ -54,7 +54,12 @@ def run(execution_id):
     if not isinstance(execution_id,str) or not execution_id.isdecimal():raise ValueError('execution_id_required')
     with (ROOT/'triage.lock').open('a') as guard:
         fcntl.flock(guard,fcntl.LOCK_EX)
-        return calculate(execution_id)
+        summary=calculate(execution_id)
+        request=ROOT/'approved-return-review.json'
+        if request.exists():
+            from return_review import update
+            update(ROOT,request,execution_id)
+        return summary
 
 def calculate(execution_id):
     target=ROOT/'cohort-maintenance-15-90-n8n.json'
