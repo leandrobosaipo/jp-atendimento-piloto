@@ -1,5 +1,6 @@
 """Plan an ownership window or close admissions and enumerate uncertain calls."""
 import argparse,datetime as dt,fcntl,hashlib,json,os,ssl,subprocess,tempfile,uuid
+import stat
 from pathlib import Path
 
 def ownership_deadline(proof,now):
@@ -44,7 +45,18 @@ def transition(root,mode,roles,owner,cutover,apply):
     if 'public_art_continuation' in roles and 'public_first_reply' not in roles:raise ValueError('first_reply_required')
     with (state/'lease.lock').open('rb') as lock:
         fcntl.flock(lock,fcntl.LOCK_EX|fcntl.LOCK_NB);p=state/'ownership.json';old=json.loads(p.read_text())
-        uncertain=sorted(x.stem for x in (state/'admissions').glob('*.intent') if not x.with_suffix('.done').exists())
+        # The operator's archive affects only this maintenance check. Admissions
+        # retain their original intents, so dispatch cannot replay them.
+        archive=root/'ops-config/administrative-close.json'
+        closed={}
+        if archive.exists():
+            info=archive.lstat()
+            if not stat.S_ISREG(info.st_mode) or info.st_uid!=0 or info.st_mode&0o077:
+                raise ValueError('administrative_archive_untrusted')
+            closed=json.loads(archive.read_bytes())
+        uncertain=sorted(x.stem for x in (state/'admissions').glob('*.intent')
+                         if not x.with_suffix('.done').exists() and
+                         (x.name not in closed or hashlib.sha256(x.read_bytes()).hexdigest()!=closed[x.name]))
         now=dt.datetime.now(dt.timezone.utc);epoch=str(uuid.uuid4())
         if mode!='maintenance':
             if old['mode']!='maintenance' or uncertain or not roles:raise ValueError('close_and_reconcile_required')
