@@ -4,12 +4,16 @@ import hashlib
 import json
 import re
 import sys
+import sqlite3
+from contextlib import closing
 import urllib.parse
 import urllib.request
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
 from maintenance_triage import NoRedirect, SETTINGS, _consents, _request, save
+from maintenance_triage import central_state
+from return_list import bind
 
 
 def occupied(config,professional,date):
@@ -81,9 +85,16 @@ def update(root,request_path,execution):
     now=dt.datetime.now(ZoneInfo('America/Cuiaba'))
     if not dt.datetime.fromisoformat(request['opens'])<=now<dt.datetime.fromisoformat(request['closes']):return
     out=root/'return-window-readback.json'
-    if out.exists() and json.loads(out.read_bytes()).get('approval')==request['sha256']:return
+    if out.exists():
+        prior=json.loads(out.read_bytes())
+        if prior.get('approval')==request['sha256'] and prior.get('schema')==2:return
     approved=(root/'conferencia-convites-22nov.json').read_bytes()
     if hashlib.sha256(approved).hexdigest()!=request['sha256']:raise ValueError('approval_changed')
     sys.path.append('/usr/local/libexec/atendimento-piloto-integracao')
-    rows=check(request,json.loads(approved)['items'],now)
-    save(out,dict(checked=now.isoformat(),execution=execution,approval=request['sha256'],rows=rows))
+    items=json.loads(approved)['items']
+    rows=check(request,items,now)
+    directory,_=_request('/pages/cadastros/buscaClientes.php',{})
+    with closing(sqlite3.connect('file:/var/lib/jp-dispatch/ledger.sqlite3?mode=ro',uri=True)) as db:
+        physical=db.execute('select destination,state from dispatch_attempts').fetchall()
+    rows=bind(items,json.loads(SETTINGS.read_bytes())['held'],directory,rows,central_state(),physical)
+    save(out,dict(schema=2,checked=now.isoformat(),execution=execution,approval=request['sha256'],rows=rows))

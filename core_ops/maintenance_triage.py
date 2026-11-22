@@ -44,11 +44,14 @@ def _request(path, params):
     if any(int(data[k])!=len(data['data']) for k in ('recordsTotal','recordsFiltered') if k in data):raise ValueError('agenda_truncated')
     return data['data'],hashlib.sha256(raw).hexdigest()
 
-def _consents():
+def central_state():
     cfg=json.loads((CORE/'config/runtime.json').read_bytes()); enc=json.loads((CORE/'state/state.json').read_bytes())
     aad=(enc['format']+':gzip:'+str(enc['plain_bytes'])).encode()
     plain=AESGCM(bytes.fromhex(cfg['stateKey'])).decrypt(base64.b64decode(enc['iv']),base64.b64decode(enc['ciphertext'])+base64.b64decode(enc['tag']),aad)
-    state=json.loads(gzip.decompress(plain)); return {str(x.get('client_code')):str(x.get('status')) for x in state['reactivation']['consents']}
+    return json.loads(gzip.decompress(plain))
+
+def _consents():
+    return {str(x.get('client_code')):str(x.get('status')) for x in central_state()['reactivation']['consents']}
 
 def run(execution_id):
     if not isinstance(execution_id,str) or not execution_id.isdecimal():raise ValueError('execution_id_required')
