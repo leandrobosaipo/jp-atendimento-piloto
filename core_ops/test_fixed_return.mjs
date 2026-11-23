@@ -1,11 +1,18 @@
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { sendFixedReturn } from './fixed_return.mjs';
+import { reviewDue } from './fixed_return_stage.mjs';
 
 const hash = value => createHash('sha256').update(value).digest('hex');
 const rows = Array.from({length:11},(_,i)=>({client:String(i),approval_key:hash(String(i)),
   options:[[24,'14:00'],[25,'15:00']],text:'Convite fictício '+i}));
 const raw = JSON.stringify({items:rows}), now=1800000000000;
+const lag={status:'inbox_catching_up',checked:now,retryAfter:now+3600000};
+assert.equal(reviewDue(lag,now+59999),false);
+assert.equal(reviewDue(lag,now+60000),true);
+for(const status of ['identity_conflict','human_handling','previous_uncertain','customer_request_pending']){
+  assert.equal(reviewDue({...lag,status},now+60000),false);
+}
 const scope={raw,digest:hash(raw),opens:now-60000,closes:now+60000};
 const row=rows[0];
 const verified={approval:scope.digest,execution:'41',key:row.approval_key,status:'matched',checked:now,

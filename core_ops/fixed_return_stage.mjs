@@ -5,6 +5,12 @@ import {sendFixedReturn} from './fixed_return.mjs';
 const base='/ops-config/fixed-return';
 const clock='7Ur9XdO2FiFEnMhY';
 const read=f=>JSON.parse(fs.readFileSync(f,'utf8'));
+export function reviewDue(review,now){
+  if(review?.status==='inbox_catching_up' && Number.isFinite(review.checked)){
+    return now-review.checked>=60000;
+  }
+  return !(review?.retryAfter>now);
+}
 function scope(){
   const cfg=read(base+'/scope.json');
   const raw=fs.readFileSync(base+'/approved.json','utf8');
@@ -32,7 +38,7 @@ export async function fixedReturnStage(h,stage,identity,node){
   if(stage==='fixed-return-next'){
     const state=h.load(),attempted=new Set((state.fixed_return_dispatches||[]).map(a=>a.request_id));
     const available=JSON.parse(cfg.raw).items.filter(r=>cfg.keys.includes(r.approval_key)&&!attempted.has(r.approval_key)&&
-      !(state.fixed_return_reviews?.[r.approval_key]?.retryAfter>now));
+      reviewDue(state.fixed_return_reviews?.[r.approval_key],now));
     return available.length?[{approval_key:available[Math.floor(now/60000)%available.length].approval_key}]:[];
   }
   const execution=identity.executionId;
