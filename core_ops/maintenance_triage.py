@@ -62,6 +62,9 @@ def run(execution_id):
         if request.exists():
             from return_review import update
             update(ROOT,request,execution_id)
+            if (CORE/'ops-config/fixed-return/identities.json').is_file():
+                from fixed_return_status import update as update_results
+                update_results(ROOT,CORE,execution_id,central_state(),save)
         return summary
 
 def calculate(execution_id):
