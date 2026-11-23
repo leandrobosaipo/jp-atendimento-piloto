@@ -83,7 +83,7 @@ def check(request, rows, now, selected=None):
     return result
 
 
-def review_one(root, execution, approval_key):
+def review_one(root, execution, approval_key, private_ticket=False):
     """Re-read a single fixed offer. This operation cannot send or reserve a slot."""
     if not re.fullmatch(r'[a-f0-9]{64}',approval_key):
         raise ValueError('invalid_approval_key')
@@ -108,8 +108,26 @@ def review_one(root, execution, approval_key):
         bound=bind(items,json.loads(SETTINGS.read_bytes())['held'],directory,checks,central_state(),attempts)
         candidate,=[r for r in bound if r['approval_key']==approval_key]
         status=candidate['status'] if now()<end else 'window_closed'
-    return dict(status=status,approval_key=approval_key,execution=execution,
-                started=began.isoformat(),checked=now().isoformat(),message_sent=False)
+    finished=now()
+    result=dict(status=status,approval_key=approval_key,execution=execution,
+                started=began.isoformat(),checked=finished.isoformat(),message_sent=False)
+    if private_ticket and status=='matched':
+        # Bind the full address from the directory. The alias used by bind()
+        # compares Brazilian mobile variants and is not an outbound address.
+        addresses=set()
+        for person in directory:
+            if str(person['Codigo'])!=selected['client']:continue
+            for field in ('Celular','Cli_Celular','Telefone'):
+                digits=re.sub(r'\D','',str(person.get(field) or ''))
+                if len(digits) in (10,11):digits='55'+digits
+                if re.fullmatch(r'55[1-9]\d{9,10}',digits):addresses.add(digits)
+        if len(addresses)!=1:
+            result['status']='identity_conflict'
+        elif finished<end and (finished-began).total_seconds()<30:
+            result['ticket']=dict(status=status,key=approval_key,execution=execution,approval=request['sha256'],
+                client=selected['client'],number=addresses.pop(),options=selected['options'],
+                checked=int(began.timestamp()*1000),textHash=candidate['text_sha256'])
+    return result
 
 
 def update(root,request_path,execution):

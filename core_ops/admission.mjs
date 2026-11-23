@@ -61,7 +61,7 @@ export function operational({manifest,secrets,stateDir,inner,model,instance}){
     const prefix=path.join(ledger,workflow+"-"+execution+"-");
     const previous=id=>{try{const r=read(prefix+id+".done");return r.epoch===gate.epoch?r:null;}catch{return null;}};
     const stage=route.split("/").at(-1);
-    const required=({"send-initial":false,"send-reminders":false,reactivation:true,"brand-send":true,"reply-execute":true})[stage]??(route==="/api/confirmation-batch/run"?true:undefined);
+    const required=({"send-initial":false,"send-reminders":false,reactivation:true,"fixed-return":true,"brand-send":true,"reply-execute":true})[stage]??(route==="/api/confirmation-batch/run"?true:undefined);
     if(required!==undefined){
       const pre=Object.keys(spec.nodes).filter(n=>spec.nodes[n].endsWith("/before-dispatch")&&
         (role!=="clock"||spec.forced.includes(n)===required)).map(previous);

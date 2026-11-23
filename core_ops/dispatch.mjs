@@ -29,6 +29,7 @@ export function records(s){
     add("visit",a,a.initial_plan_id||a.review_id,attempt,a.destination_e164);
   }
   for(const a of s.manual_dispatches||[])add("manual",a,a.review_id,a.attempt_id||a.outbound_budget_reservation_id,a.destination_e164);
+  for(const a of s.fixed_return_dispatches||[])add("fixed-return",a,a.request_id,a.attempt_id,a.destination_e164);
   for(const a of s.reminders||[])add("reminder",a,a.reminder_id,a.outbound_budget_reservation_id||a.reminder_id,a.destination_e164);
   for(const a of s.jp_reply_attempts||[])if(a.kind==="send")add("reply",a,a.source_message_id,a.attempt_id,a.destination_e164);
   for(const a of s.brand_education?.entries||[])add("brand",a.attempt,a.entry_id,a.attempt?.attempt_id,a.destination_e164);
@@ -74,7 +75,7 @@ export function scopedServer(handler){
   return http.createServer((req,res)=>{
     const ctx={workflow:req.headers["x-jp-n8n-workflow-id"],execution:req.headers["x-jp-n8n-execution-id"],node:req.headers["x-jp-node-id"],
       epoch:req.headers["x-jp-owner-epoch"],active:true,before:new Set()};
-    if(ctx.epoch&&loadState&&/\/(?:send-initial|send-reminders|reply-execute|brand-send|reactivation|run|manual)$/.test(req.url))ctx.before=new Set(records(loadState()).map(r=>r.id));
+    if(ctx.epoch&&loadState&&/\/(?:send-initial|send-reminders|reply-execute|brand-send|reactivation|fixed-return|run|manual)$/.test(req.url))ctx.before=new Set(records(loadState()).map(r=>r.id));
     res.once("close",()=>{ctx.active=false;});return context.run(ctx,()=>handler(req,res));
   });
 }
