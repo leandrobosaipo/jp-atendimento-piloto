@@ -46,6 +46,12 @@ def bind(approved, held, directory, checks, state, physical):
             if attempt.get('status') == 'delivery_unknown' and not attempt.get('delivery_confirmed'):
                 uncertain.add(phone(attempt.get('destination_e164')))
     checks = {r['client']: r for r in checks}
+    team = {phone(c.get('destination_e164')) for c in state.get('delay_support_cases', [])
+            if c.get('status') in ('open', 'claimed', 'answered')}
+    team.update(phone(c.get('conversation_id')) for c in state.get('conversations', [])
+                if c.get('human_handoff') is True)
+    stopped = {phone(c.get('conversation_id')) for c in state.get('conversations', [])
+               if c.get('opt_out') is True}
     result = []
     for row in approved:
         cid = row['client']
@@ -59,6 +65,10 @@ def bind(approved, held, directory, checks, state, physical):
                 status = 'identity_conflict'
             elif number in uncertain:
                 status = 'previous_uncertain'
+            elif number in stopped:
+                status = 'opted_out'
+            elif number in team:
+                status = 'human_handling'
             elif (number, digest) in sent:
                 status = 'already_attempted'
             elif not row['options'] or current['options'] != row['options']:

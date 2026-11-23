@@ -87,7 +87,7 @@ def update(root,request_path,execution):
     out=root/'return-window-readback.json'
     if out.exists():
         prior=json.loads(out.read_bytes())
-        if prior.get('approval')==request['sha256'] and prior.get('schema')==2:return
+        if prior.get('approval')==request['sha256'] and prior.get('schema')==3:return
     approved=(root/'conferencia-convites-22nov.json').read_bytes()
     if hashlib.sha256(approved).hexdigest()!=request['sha256']:raise ValueError('approval_changed')
     sys.path.append('/usr/local/libexec/atendimento-piloto-integracao')
@@ -97,4 +97,4 @@ def update(root,request_path,execution):
     with closing(sqlite3.connect('file:/var/lib/jp-dispatch/ledger.sqlite3?mode=ro',uri=True)) as db:
         physical=db.execute('select destination,state from dispatch_attempts').fetchall()
     rows=bind(items,json.loads(SETTINGS.read_bytes())['held'],directory,rows,central_state(),physical)
-    save(out,dict(schema=2,checked=now.isoformat(),execution=execution,approval=request['sha256'],rows=rows))
+    save(out,dict(schema=3,checked=now.isoformat(),execution=execution,approval=request['sha256'],rows=rows))
