@@ -20,7 +20,8 @@ def record_ticket(value):
     fd,tmp=tempfile.mkstemp(dir=GRANTS)
     try:
         with os.fdopen(fd,'w') as f:
-            os.fchown(f.fileno(),0,GRANTS.stat().st_gid)
+            if os.fstat(f.fileno()).st_gid!=GRANTS.stat().st_gid:
+                raise PermissionError('private_reader_group_not_inherited')
             os.fchmod(f.fileno(),0o440)
             json.dump(value,f);f.flush();os.fsync(f.fileno())
         os.replace(tmp,GRANTS/'latest.json')
