@@ -1,9 +1,21 @@
 import sqlite3
 import unittest
-from attendance_evidence import summarize
+from attendance_evidence import scan, summarize
 
 
 class Evidence(unittest.TestCase):
+    def test_repeated_read_keeps_one_direct_message_and_excludes_groups(self):
+        db=sqlite3.connect(':memory:')
+        db.executescript("create table receipts(seq integer,id);insert into receipts values(1,'fake');")
+        def msg(jid):
+            return {'key':{'remoteJid':jid,'remoteJidAlt':'123456@lid','id':jid,'fromMe':False}}
+        envelope={'instance':'fixture','event':'messages.upsert','data':[msg('123456@lid'),msg('123456@g.us')]}
+        index={'last':0,'anchor':None,'incoming':{},'quotes':{},'connections':[]}
+        read=lambda _:({'receivedAt':'2026-11-23T12:00:00Z'},[envelope,{'instance':'fixture','event':'connection.update','data':{'state':'open'}}])
+        for _ in range(2):scan(db,index,read,'fixture')
+        self.assertEqual(list(index['incoming']),['123456@lid'])
+        self.assertEqual(len(index['connections']),1)
+
     def test_shared_ticket_and_unaccepted_send_stay_pending(self):
         db=sqlite3.connect(':memory:')
         db.executescript("""create table captured(message_id,kind,received_at);

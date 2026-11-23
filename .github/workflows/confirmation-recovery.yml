@@ -23,5 +23,6 @@ jobs:
           python3 core_ops/test_fixed_return_inbox.py
           python3 -m unittest discover -s core_ops -p 'test_fixed_return_status.py'
           python3 -m unittest discover -s core_ops -p 'test_attendance_evidence.py'
+          node --check core_ops/attendance_panel/atendimentos.js
           python3 -m unittest discover -s core_sync -p 'test_partial_directory.py'
           node --test core_ops/test_diagnostics.mjs core_ops/test_ops.mjs core_ops/test_task_reads.mjs core_ops/test_effect_guard.mjs
