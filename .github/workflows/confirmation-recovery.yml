@@ -20,5 +20,6 @@ jobs:
           node --test core_ops/test_central_receipt.mjs
           node core_ops/test_fixed_return.mjs
           python3 core_ops/test_return_list.py
+          python3 core_ops/test_fixed_return_inbox.py
           python3 -m unittest discover -s core_sync -p 'test_partial_directory.py'
           node --test core_ops/test_diagnostics.mjs core_ops/test_ops.mjs core_ops/test_task_reads.mjs core_ops/test_effect_guard.mjs

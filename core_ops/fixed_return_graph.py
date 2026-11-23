@@ -26,7 +26,7 @@ def build(clock,monitor,manifest):
         if route:
             p['url']=BASE+route
             header,=[v for v in p['headerParameters']['parameters'] if v['name'].lower()=='x-jp-node-id']
-            header['value']=node['id'];spec['nodes'][node['id']]=p['url']
+            header['value']=node['id'];spec['nodes'][node['id']]='/api/n8n/stages/'+route
             if route=='before-dispatch':
                 p.update(sendBody=True,specifyBody='json',jsonBody='{"force":true}')
                 spec['forced'].append(node['id'])

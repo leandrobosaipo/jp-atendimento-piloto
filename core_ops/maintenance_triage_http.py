@@ -48,6 +48,11 @@ class Handler(http.server.BaseHTTPRequestHandler):
                     body=review_one(ROOT,execution,self.headers.get("X-JP-Approval-Key",""),private_ticket=clock_review)
                     ticket=body.pop('ticket',None)
                     if clock_review:
+                        if ticket:
+                            from fixed_return_inbox import live_inbox_status
+                            roster=json.loads((GRANTS.parents[1]/'fixed-return/identities.json').read_bytes())
+                            body['status']=live_inbox_status(ticket['number'],roster['pairs'],roster['since'])
+                            if body['status']!='matched':ticket=None
                         record_ticket(ticket or dict(status=body['status'],key=body['approval_key'],execution=execution))
                 status=200
             except Exception as error:
