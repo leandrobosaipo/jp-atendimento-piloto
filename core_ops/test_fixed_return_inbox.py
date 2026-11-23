@@ -1,8 +1,22 @@
-import hashlib,json,sqlite3,unittest
+import hashlib,json,sqlite3,tempfile,unittest
+from pathlib import Path
 from datetime import datetime,timezone
-from fixed_return_inbox import inbox_ready
+from fixed_return_inbox import captured_snapshot,inbox_ready
 
 class Coverage(unittest.TestCase):
+    def test_private_snapshot_includes_committed_wal(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            source=Path(tmp)/'source.db';writer=sqlite3.connect(source)
+            try:
+                writer.execute('pragma journal_mode=WAL')
+                writer.execute('create table inbox(n)');writer.execute('insert into inbox values(12)');writer.commit()
+                with captured_snapshot(source) as copy:
+                    self.assertEqual(copy.execute('select n from inbox').fetchone(),(12,))
+                    with self.assertRaises(sqlite3.OperationalError):copy.execute('delete from inbox')
+            finally:writer.close()
+            with captured_snapshot(source) as copy:
+                self.assertEqual(copy.execute('select n from inbox').fetchone(),(12,))
+
     def test_new_team_message_customer_message_and_lag_each_hold(self):
         db=sqlite3.connect(':memory:');self.addCleanup(db.close)
         phone='5511999990000';pn=hashlib.sha256((phone+'@s.whatsapp.net').encode()).hexdigest()
