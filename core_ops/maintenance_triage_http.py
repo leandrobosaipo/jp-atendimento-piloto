@@ -8,7 +8,8 @@ import select
 import socket
 import socketserver
 
-from maintenance_triage import run
+from maintenance_triage import ROOT,run
+from return_review import review_one
 
 WORKFLOW="C4jene5zY5Z2jJcC"
 
@@ -19,13 +20,17 @@ class Handler(http.server.BaseHTTPRequestHandler):
     def do_POST(self):
         token=(Path(os.environ["CREDENTIALS_DIRECTORY"])/"token").read_text().strip()
         execution=self.headers.get("X-JP-Execution","")
-        valid=(self.path=="/triagem" and self.headers.get("X-JP-Workflow")==WORKFLOW and
+        valid=(self.path in ("/triagem","/triagem/convite") and self.headers.get("X-JP-Workflow")==WORKFLOW and
                execution.isascii() and execution.isdecimal() and len(execution)<=20 and
                hmac.compare_digest(self.headers.get("Authorization",""),"Bearer "+token))
         status,body=403,{"ok":False}
         if valid:
             try:
-                body=run(execution);status=200
+                if self.path=="/triagem":
+                    body=run(execution)
+                else:
+                    body=review_one(ROOT,execution,self.headers.get("X-JP-Approval-Key",""))
+                status=200
             except Exception as error:
                 print("maintenance triage held",type(error).__name__,flush=True)
                 status,body=503,{"ok":False,"status":"triage_held"}

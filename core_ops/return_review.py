@@ -30,7 +30,7 @@ def occupied(config,professional,date):
             for v in data if str(v['codStatus'])!='4']
 
 
-def check(request, rows, now):
+def check(request, rows, now, selected=None):
     import provider
     if len(rows)!=11 or len({row['client'] for row in rows})!=len(rows):
         raise ValueError('approval_list_changed')
@@ -54,6 +54,9 @@ def check(request, rows, now):
     result=[]
     for row in rows:
         cid=row['client']
+        if selected is not None and cid!=selected:
+            result.append(dict(client=cid,status='not_requested'))
+            continue
         if cid in future or consent.get(cid)=='opted_out':
             result.append(dict(client=cid,status='booked' if cid in future else 'opted_out'))
             continue
@@ -78,6 +81,35 @@ def check(request, rows, now):
                 available.append([day,hour])
         result.append(dict(client=cid,status='slots_available' if available else 'no_slots',options=available))
     return result
+
+
+def review_one(root, execution, approval_key):
+    """Re-read a single fixed offer. This operation cannot send or reserve a slot."""
+    if not re.fullmatch(r'[a-f0-9]{64}',approval_key):
+        raise ValueError('invalid_approval_key')
+    request=json.loads((root/'approved-return-review.json').read_bytes())
+    raw=(root/'conferencia-convites-22nov.json').read_bytes()
+    if hashlib.sha256(raw).hexdigest()!=request['sha256']:
+        raise ValueError('approval_changed')
+    items=json.loads(raw)['items']
+    selected,=[r for r in items if r['approval_key']==approval_key]
+    start=dt.datetime.fromisoformat(request['opens'])
+    end=dt.datetime.fromisoformat(request['closes'])
+    now=lambda:dt.datetime.now(ZoneInfo('America/Cuiaba'))
+    began=now()
+    status='window_closed'
+    if start<=began<end:
+        if '/usr/local/libexec/atendimento-piloto-integracao' not in sys.path:
+            sys.path.append('/usr/local/libexec/atendimento-piloto-integracao')
+        checks=check(request,items,began,selected=selected['client'])
+        directory,_=_request('/pages/cadastros/buscaClientes.php',{})
+        with closing(sqlite3.connect('file:/var/lib/jp-dispatch/ledger.sqlite3?mode=ro',uri=True)) as db:
+            attempts=db.execute('select destination,state from dispatch_attempts').fetchall()
+        bound=bind(items,json.loads(SETTINGS.read_bytes())['held'],directory,checks,central_state(),attempts)
+        candidate,=[r for r in bound if r['approval_key']==approval_key]
+        status=candidate['status'] if now()<end else 'window_closed'
+    return dict(status=status,approval_key=approval_key,execution=execution,
+                started=began.isoformat(),checked=now().isoformat(),message_sent=False)
 
 
 def update(root,request_path,execution):
