@@ -20,6 +20,7 @@ function draw(){
     tr.insertCell().textContent=fmt(r.at);const outcome=tr.insertCell();line(outcome,r.reply||r.status,'span');
     if(r.reply && (r.ticket || r.status==='Confirmação registrada na agenda'))line(outcome,r.status);
     for(const p of r.proof)line(outcome,'Registro de saída em '+fmt(p.at));
+    if(!r.reply && r.later)line(outcome,'Houve mensagem posterior na conversa em '+fmt(r.later)+'. O vínculo com esta entrada precisa de conferência.');
     tr.insertCell().textContent=r.owner || (r.ticket?'Sem responsável atribuído':'—');
   }
   if(!rows.length)el('rows').insertRow().insertCell().textContent='Nenhuma mensagem nessa seleção.';

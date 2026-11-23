@@ -57,7 +57,8 @@ def scan(queue, index, read, instance):
                 k = row.get('key') or {}
                 mid = k.get('id')
                 addr = addresses(row)
-                if not mid or not addr or k.get('participant'):
+                if not mid or not addr or k.get('participant') or not re.fullmatch(
+                        r'\d+(?::\d+)?@(lid|s\.whatsapp\.net)',str(k.get('remoteJid',''))):
                     continue
                 if k.get('fromMe') is False:
                     name = str(row.get('pushName') or '').strip()[:90]
@@ -65,6 +66,8 @@ def scan(queue, index, read, instance):
                         name=''
                     index['incoming'].setdefault(mid,dict(at=at,name=name,seq=seq,addr=sorted(addr)))
                 if k.get('fromMe') is True:
+                    for ident in addr:
+                        index.setdefault('latest_outgoing',{})[ident]=max(at,index.get('latest_outgoing',{}).get(ident,''))
                     for part in (row.get('message') or {}).values():
                         ctx = part.get('contextInfo') if isinstance(part,dict) else None
                         if ctx and ctx.get('stanzaId'):
@@ -104,7 +107,7 @@ def summarize(index, capture, ledger, state, cases, reviewed):
         name=review.get('name') or entry['name'] or 'Identidade a conferir'
         link,ticket,kind,_=statuses.get(mid,(None,None,None,None))
         assignee,case_status=cases.get(ticket,(None,None))
-        status='Aguarda conferência'
+        status='Aguarda conferência' if mid in statuses else 'Histórico sem registro de tratamento'
         if ticket:
             status='Com a equipe' if assignee else 'Aguarda responsável'
         if case_status==1:
@@ -129,9 +132,10 @@ def summarize(index, capture, ledger, state, cases, reviewed):
                 'observado':'Resposta observada no WhatsApp','incerto':'Envio incerto','delivery_unknown':'Envio incerto'}
         outcomes={x['result'] for x in evidence}
         result=next((labels[k] for k in labels if k in outcomes),None)
+        later=max((index.get('latest_outgoing',{}).get(ident,'') for ident in entry['addr']),default='')
         rows.append(dict(seq=entry['seq'],at=entry['at'],name=name,kind=kind or 'entrada a conferir',
                          status=status,reply=result,proof=evidence,ticket=ticket,owner=assignee,
-                         captured=mid in statuses))
+                         later=later if later>entry['at'] else None,captured=mid in statuses))
     return sorted(rows,key=lambda r:r['at'],reverse=True)
 
 
