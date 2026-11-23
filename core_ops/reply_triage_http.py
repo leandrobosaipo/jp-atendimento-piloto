@@ -226,6 +226,21 @@ class Handler(http.server.BaseHTTPRequestHandler):
         pass
 
     def do_POST(self):
+        if self.path.startswith('/attendance-evidence/'):
+            execution=self.path.removeprefix('/attendance-evidence/')
+            peer=self.connection.getsockopt(socket.SOL_SOCKET,socket.SO_PEERCRED,12)
+            if (not execution.isascii() or not execution.isdecimal() or len(execution)>20
+                    or struct.unpack('3i',peer)[1]!=0 or self.headers.get('Content-Length','0')!='0'):
+                return self.send_error(403)
+            try:
+                from attendance_evidence import refresh
+                refresh(execution)
+            except Exception as exc:
+                print('attendance evidence unavailable',type(exc).__name__,file=sys.stderr,flush=True)
+                return self.send_error(503)
+            self.send_response(204)
+            self.end_headers()
+            return
         if self.path.startswith('/ownership/'):
             return self.ownership(self.path[11:])
         if self.path != "/tick" or self.headers.get("Content-Length", "0") not in {"0", ""}:

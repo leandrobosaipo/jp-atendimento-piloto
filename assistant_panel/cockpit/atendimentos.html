@@ -1,0 +1,10 @@
+<!doctype html>
+<html lang="pt-BR"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Atendimentos do Marcelinho</title>
+<style>
+*{box-sizing:border-box}body{margin:0;background:#f6f5f0;color:#202c2a;font:16px/1.5 system-ui,sans-serif}main{max-width:1120px;margin:auto;padding:32px 20px}h1{font:600 clamp(28px,5vw,48px)/1.15 Georgia,serif;margin:0}header,nav{display:flex;gap:12px;justify-content:space-between;align-items:center;flex-wrap:wrap}button,select,input{font:inherit;padding:.5rem;border:1px solid #89938d;border-radius:6px;background:white}button{cursor:pointer}section{background:#fff;padding:16px 20px;margin:18px 0;border:1px solid #d9ded9;border-radius:8px}h2{font-size:19px;margin:0}#summary{font-weight:650}#alert{color:#8d381d;font-weight:600}table{border-collapse:collapse;width:100%;margin-top:15px}td,th{text-align:left;border-top:1px solid #ddd;padding:8px;vertical-align:top}th{font-size:.85rem}.scroll{overflow-x:auto}small{display:block;color:#46534e}p{margin:.5em 0}details{margin:12px 0}label{display:flex;gap:7px;align-items:center}
+</style><script src="../base1/cockpit.js" defer></script><script src="atendimentos.js" defer></script></head>
+<body><main><header><h1>Atendimentos do Marcelinho</h1><button id="reload">Atualizar</button></header>
+<p id="time" role="status">Consultando o Dell…</p><p id="alert" role="alert"></p>
+<section><h2>Quem precisa de atenção</h2><p id="summary"></p><nav><label>Mostrar <select id="filter"><option value="open">Pendências</option><option value="all">Todas as mensagens</option><option value="done">Com resultado comprovado</option></select></label><label>Buscar <input id="search" placeholder="Nome ou chamado"></label></nav>
+<div class="scroll"><table><thead><tr><th>Cliente e entrada</th><th>Quando chegou</th><th>Resultado</th><th>Responsável</th></tr></thead><tbody id="rows"></tbody></table></div></section>
+<section><h2>Cobertura da conferência</h2><p id="coverage"></p><p id="origin"></p><details><summary>Conexões recentes do WhatsApp</summary><div id="connections"></div></details></section></main></body></html>

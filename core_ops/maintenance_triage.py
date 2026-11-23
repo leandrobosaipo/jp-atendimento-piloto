@@ -57,7 +57,12 @@ def run(execution_id):
     if not isinstance(execution_id,str) or not execution_id.isdecimal():raise ValueError('execution_id_required')
     with (ROOT/'triage.lock').open('a') as guard:
         fcntl.flock(guard,fcntl.LOCK_EX)
+        import subprocess
+        coverage=subprocess.run(['curl','--silent','--fail','--max-time','25','--unix-socket',
+                                 '/run/jp-reply-triage.sock','-X','POST','--data','',
+                                 'http://localhost/attendance-evidence/'+execution_id], capture_output=True)
         summary=calculate(execution_id)
+        summary['attendance_evidence_current']=coverage.returncode==0
         request=ROOT/'approved-return-review.json'
         if request.exists():
             from return_review import update
