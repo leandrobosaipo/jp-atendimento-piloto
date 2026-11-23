@@ -52,6 +52,15 @@ def bind(approved, held, directory, checks, state, physical):
                 if c.get('human_handoff') is True)
     stopped = {phone(c.get('conversation_id')) for c in state.get('conversations', [])
                if c.get('opt_out') is True}
+    team.update(phone(t.get('destination_e164')) for t in state.get('jp_reply_tasks', [])
+                if t.get('status') in ('human', 'waiting_team'))
+    uncertain.update(phone(t.get('destination_e164')) for t in state.get('jp_reply_tasks', [])
+                     if t.get('status')=='delivery_unknown')
+    paused = {phone(r.get('destination_e164')) for r in state.get('reminders', [])
+              if r.get('status') in ('paused_support', 'paused_customer_request')}
+    visits = {d.get('appointment_id'):d.get('destination_e164') for d in state.get('individual_dispatches', [])}
+    stopped.update(phone(r.get('destination_e164') or visits.get(r.get('appointment_id')))
+                   for r in state.get('jp_responses', []) if r.get('intent')=='opt_out')
     result = []
     for row in approved:
         cid = row['client']
@@ -69,6 +78,8 @@ def bind(approved, held, directory, checks, state, physical):
                 status = 'opted_out'
             elif number in team:
                 status = 'human_handling'
+            elif number in paused:
+                status = 'customer_request_pending'
             elif (number, digest) in sent:
                 status = 'already_attempted'
             elif not row['options'] or current['options'] != row['options']:
