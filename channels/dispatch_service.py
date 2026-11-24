@@ -232,7 +232,8 @@ class Evolution:
 
     def __call__(self, path, payload):
         need(path in ("/message/sendText/" + INSTANCE, "/message/sendMedia/" + INSTANCE), "invalid_native_path")
-        return self.post(path, payload)
+        # Evolution 2.3.7 sends composing to the verified chat before text and media.
+        return self.post(path, {**payload, "delay": max(1200, payload.get("delay", 0))})
 
 
 def plan_readers(cfg):

@@ -13,8 +13,26 @@ from uuid import uuid4
 from bridge import Held, Outbox, digest
 from dispatch import Dispatcher
 from dispatch_contract import INSTANCE
-from dispatch_service import Handler, Policy, Server, clear_stale_socket
+from dispatch_service import Evolution, Handler, Policy, Server, clear_stale_socket
 from dispatch_service import observe_event, observe_records
+
+
+class TypingTests(unittest.TestCase):
+    def test_one_native_request_per_part_with_typing(self):
+        provider = Evolution()
+        calls = []
+        provider.post = lambda route, body: calls.append((route, body))
+        for route, payload, delay in [
+            ("sendText", {"text": "Olá"}, 1200),
+            ("sendText", {"text": "Segunda parte", "delay": 0}, 1200),
+            ("sendMedia", {"media": "fixture", "delay": 2000}, 2000),
+        ]:
+            original = dict(payload)
+            path = "/message/" + route + "/" + INSTANCE
+            provider(path, payload)
+            self.assertEqual(calls[-1], (path, {**original, "delay": delay}))
+            self.assertEqual(payload, original)
+        self.assertEqual(len(calls), 3)
 
 
 class DeliveryTests(unittest.TestCase):
