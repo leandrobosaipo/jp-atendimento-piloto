@@ -139,6 +139,26 @@ def summarize(index, capture, ledger, state, cases, reviewed):
     return sorted(rows,key=lambda r:r['at'],reverse=True)
 
 
+def channel_status(expected_instance,run=subprocess.run):
+    """Read the scoped JP observer independently of the incoming message queue."""
+    request = """const s=require('node:net').connect('/model/observer.sock');
+s.setTimeout(9000,()=>s.destroy(Error('timeout')));
+s.on('error',()=>process.exit(1));
+s.on('connect',()=>s.write(JSON.stringify({action:'state'})+'\\n'));
+s.pipe(process.stdout);"""
+    try:
+        result = run(['docker','exec','-u','64681','jp-core-operacional','node','-e',request],
+                     capture_output=True,check=True,text=True,timeout=12)
+        response = json.loads(result.stdout)
+        instance = response['body']['instance']
+        if response['status']==200 and instance['instanceName']==expected_instance:
+            if instance['state'] in ('open','close','connecting'):
+                return instance['state']
+    except (OSError, subprocess.SubprocessError, ValueError, KeyError, TypeError):
+        pass
+    return 'unknown'
+
+
 def refresh(execution):
     sys.path[:0]=['/opt/jp-maintenance-triage','/opt/jp-reply-capture','/opt/jp-dispatch/current']
     from maintenance_triage import save,central_state
@@ -159,7 +179,7 @@ def refresh(execution):
     now=dt.datetime.now(ZONE)
     report=dict(at=now.isoformat(timespec='seconds'),execution=execution,high=high,processed=cursor,
                 inspected=index['last'],origin='Sem comprovação independente na origem',
-                connections=index['connections'][-30:],rows=rows)
+                channel_state=channel_status(INSTANCE),connections=index['connections'][-30:],rows=rows)
     save(folder/(now.date().isoformat()+'.json'),report)
     save(folder/'latest.json',report)
     display=Path('/var/lib/jp-atendimento-evidencia/latest.json')

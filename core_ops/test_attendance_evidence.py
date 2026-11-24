@@ -1,9 +1,20 @@
 import sqlite3
 import unittest
-from attendance_evidence import scan, summarize
+import json
+from types import SimpleNamespace
+from attendance_evidence import channel_status, scan, summarize
 
 
 class Evidence(unittest.TestCase):
+    def test_channel_check_distinguishes_closed_from_unknown(self):
+        def read(state, name):
+            return lambda *args,**kwargs: SimpleNamespace(stdout=json.dumps(
+                {'status':200,'body':{'instance':{'state':state,'instanceName':name}}}))
+        for state in ['open','close','connecting']:
+            self.assertEqual(channel_status('fixture',read(state,'fixture')),state)
+        self.assertEqual(channel_status('fixture',read('open','other')),'unknown')
+        self.assertEqual(channel_status('fixture',read('unrecognized','fixture')),'unknown')
+
     def test_repeated_read_keeps_one_direct_message_and_excludes_groups(self):
         db=sqlite3.connect(':memory:')
         db.executescript("create table receipts(seq integer,id);insert into receipts values(1,'fake');")

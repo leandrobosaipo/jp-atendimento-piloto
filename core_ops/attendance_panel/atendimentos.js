@@ -32,7 +32,14 @@ async function refresh(){
     const value=JSON.parse(text);if(!Array.isArray(value.rows))throw Error();
     report=value;draw();
     el('time').textContent='Conferido pelo Dell em '+fmt(report.at)+' · horário de Cuiabá';
-    el('alert').textContent=Date.now()-Date.parse(report.at)>600000?'A última conferência tem mais de dez minutos. Verifique o monitor.':'';
+    const warnings=[];
+    if(Date.now()-Date.parse(report.at)>600000)warnings.push('A última conferência tem mais de dez minutos. Verifique o monitor.');
+    if(report.channel_state!=='open')warnings.push(({
+      close:'O WhatsApp da automação JP está desconectado.',
+      connecting:'O WhatsApp da automação JP está tentando conectar.'
+    }[report.channel_state]||'O monitor não conseguiu verificar a conexão do WhatsApp da JP.')+
+      ' Pode haver clientes aguardando fora desta lista. Confira o WhatsApp da equipe.');
+    el('alert').textContent=warnings.join(' ');
     el('coverage').textContent='O Dell recebeu até o evento '+report.high+', examinou até o '+report.inspected+' e processou até o '+report.processed+'. Rodada '+report.execution+'.';
     el('origin').textContent=report.origin+'. A tela acompanha as mensagens diretas registradas no Dell.';
     el('connections').replaceChildren();for(const c of [...report.connections].reverse())line(el('connections'),fmt(c[1])+' · '+({open:'conectado',connecting:'conectando',close:'desconectado'}[c[2]]||'estado a conferir'));
