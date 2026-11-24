@@ -23,16 +23,17 @@ class TypingTests(unittest.TestCase):
         calls = []
         provider.post = lambda route, body: calls.append((route, body))
         for route, payload, delay in [
-            ("sendText", {"text": "Olá"}, 1200),
-            ("sendText", {"text": "Segunda parte", "delay": 0}, 1200),
-            ("sendMedia", {"media": "fixture", "delay": 2000}, 2000),
+            ("sendText", {"text": "Olá"}, 3000),
+            ("sendText", {"text": "Segunda parte", "delay": 0}, 3000),
+            ("sendMedia", {"media": "fixture", "delay": 2000}, 3000),
+            ("sendMedia", {"media": "fixture", "delay": 4500}, 4500),
         ]:
             original = dict(payload)
             path = "/message/" + route + "/" + INSTANCE
             provider(path, payload)
             self.assertEqual(calls[-1], (path, {**original, "delay": delay}))
             self.assertEqual(payload, original)
-        self.assertEqual(len(calls), 3)
+        self.assertEqual(len(calls), 4)
 
 
 class DeliveryTests(unittest.TestCase):
