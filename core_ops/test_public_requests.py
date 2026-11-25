@@ -22,6 +22,11 @@ compound=plan('Qual o preço da manutenção e tem vaga com Pedro amanhã?',cfg,
 assert '120,00' in compound and '09:00' in compound
 followup=plan('Tem horário amanhã à tarde? Manutenção de prótese',cfg,query,today,offer_options=True)
 assert followup=='Para 17/11, tenho 13:30 com Pedro. Qual você prefere?'
+for tarde in ('de tarde','à tarde','pela tarde','no período da tarde'):
+    pedido='Tem horário amanhã '+tarde+'? Manutenção de prótese'
+    assert plan(pedido,cfg,query,today,offer_options=True)==followup
+    resposta=plan(pedido+' com Pedro',cfg,query,today)
+    assert '13:30' in resposta and '09:00' not in resposta
 assert plan('manutenção de prótese',cfg,query,today) is None
 assert plan('Sim',cfg,query,today) == 'Você consegue me dizer a que você se refere? Assim eu confiro direitinho.'
 assert plan('Pode',cfg,query,today) == 'Você consegue me dizer a que você se refere? Assim eu confiro direitinho.'

@@ -42,6 +42,7 @@ def plan(text,config,query,today,offer_options=False,media_kind=''):
     if integration not in sys.path:sys.path.append(integration)
     from policy import classify,artwork_quote
     words=normal(text)
+    afternoon=any(value in words for value in ('de tarde','a tarde','pela tarde','periodo da tarde'))
     if greeting(text):
         return 'Olá! Você quer agendar um horário ou posso ajudar com alguma dúvida?'
     if re.search(r'\b(nao|nunca|cancele?\w*|reclam\w*|ferida|alerg\w*|sangr\w*|dor|coceira|outro numero|pix|estorno|reembolso|atendente|humano|parceria|divulgacao)\b',words):return None
@@ -74,12 +75,12 @@ def plan(text,config,query,today,offer_options=False,media_kind=''):
                 professional=config['professionals'].get(slug)
                 if not professional or professional.get('human_only'):continue
                 params=dict(service_key=service,professional_key=slug,date=date.isoformat())
-                if 'a tarde' in words:params['period']='afternoon'
+                if afternoon:params['period']='afternoon'
                 elif 'de manha' in words:params['period']='morning'
                 facts=query(params)
                 if facts.get('status')!='ok' or facts.get('date')!=date.isoformat():continue
                 times=[v for v in facts.get('slots',[]) if isinstance(v,str) and re.fullmatch(r'(?:[01]\d|2[0-3]):[0-5]\d',v)]
-                if 'a tarde' in words:times=[v for v in times if '13:00'<=v<'18:00']
+                if afternoon:times=[v for v in times if '12:00'<=v<'18:00']
                 if 'de manha' in words:times=[v for v in times if v<'12:00']
                 if times:options.append(min(times)+' com '+professional['name'])
             if options:return f"Para {date:%d/%m}, tenho "+' ou '.join(options)+'. Qual você prefere?'
@@ -90,7 +91,7 @@ def plan(text,config,query,today,offer_options=False,media_kind=''):
         slots=facts.get('slots',[])
         if not isinstance(slots,list) or not all(re.fullmatch(r'\d{2}:\d{2}',s) for s in slots):return None
         if 'de manha' in words:slots=[s for s in slots if s<'12:00']
-        elif 'a tarde' in words:slots=[s for s in slots if '12:00'<=s<'18:00']
+        elif afternoon:slots=[s for s in slots if '12:00'<=s<'18:00']
         label=date.strftime('%d/%m')
         return price+((f'Para {label}, encontrei '+', '.join(slots[:3])+'. Qual horário você prefere?') if slots else f'Não encontrei vaga nesse período em {label}. Qual outro dia funciona para você?')
     if intent=='price':
@@ -164,7 +165,15 @@ def publish(root,conf,db,queue,ledger,read,execution):
       WHERE c.kind IN ('text','other') AND c.disposition!='changed_review' AND l.status IN ('identity_review','visit_review','human_review')
         AND (c.seq=? OR (c.seq>? AND ?)) ORDER BY c.seq DESC LIMIT 30"""
     candidates=[]
+    # A provider-uncertain attempt is a terminal hold for its own source only.
+    # Do not let it regenerate the same grant and starve later eligible cases.
+    try:
+        from maintenance_triage import central_state
+        attempted={str(x.get('source_message_id')) for x in central_state().get('jp_reply_attempts',[]) if x.get('source_message_id')}
+    except Exception:
+        attempted=set()
     for seq,mid,rid,ei,mi,fp,addresses,received,captured_kind,link_status,ticket in db.execute(sql,(case['seq'],config['after'],int(config['general']))):
+        if mid in attempted:continue
         stamp=dt.datetime.fromisoformat(received.replace('Z','+00:00')).timestamp()
         exception=seq==case['seq'] and rid==case['record'] and mid==case['mid']
         if now<stamp:continue
@@ -228,7 +237,7 @@ def publish(root,conf,db,queue,ledger,read,execution):
                 if not exception and question==text:
                     question=booking_continuation(text,seq,stamp,jid,aliases,db,ledger,read,config)
                 context_day=dt.datetime.fromtimestamp(stamp,CUIABA).date() if approved and question!=text else dt.datetime.now(CUIABA).date()
-                answer=PREFERENCE if exception else plan(question,config,slot_query,context_day,offer_options=question!=text,media_kind=medium)
+                answer=approval.get('answer') if approved and isinstance(approval.get('answer'),str) else (PREFERENCE if exception else plan(question,config,slot_query,context_day,offer_options=question!=text,media_kind=medium))
             # Hermes is a durable canary candidate only; all legacy gates and dispatch remain below.
             from hermes_public_requests import candidate as hermes_candidate
             if not exception and not learned and operator_available(seq):
