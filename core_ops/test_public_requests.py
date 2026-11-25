@@ -23,3 +23,12 @@ assert '120,00' in compound and '09:00' in compound
 followup=plan('Tem horário amanhã à tarde? Manutenção de prótese',cfg,query,today,offer_options=True)
 assert followup=='Para 17/11, tenho 13:30 com Pedro. Qual você prefere?'
 assert plan('manutenção de prótese',cfg,query,today) is None
+assert plan('Sim',cfg,query,today) == 'Você consegue me dizer a que você se refere? Assim eu confiro direitinho.'
+assert plan('Pode',cfg,query,today) == 'Você consegue me dizer a que você se refere? Assim eu confiro direitinho.'
+
+# Mídia não recebe interpretação: pede somente o contexto necessário.
+assert plan('',cfg,query,today,media_kind='document') == 'Recebi o documento. Você consegue me dizer como posso ajudar com ele?'
+assert plan('',cfg,query,today,media_kind='photo') == 'Recebi sua foto. Você consegue me dizer como posso ajudar?'
+# A pergunta sobre o JP não promete serviço, vaga ou confirmação.
+assert plan('O JP que vai colocar a nova prótese? Teria como marcar com ele?',cfg,query,today) == (
+    'Entendi. Preciso verificar com a equipe se o JP pode atender esse caso. Qual dia ou período fica melhor para você?')

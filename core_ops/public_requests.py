@@ -33,7 +33,11 @@ def choose_day(text,today):
     days=[i for i,d in enumerate(weekdays) if re.search(r'\b'+d+r'\b',text)]
     if len(days)==1:return today+dt.timedelta(days=(days[0]-today.weekday())%7 or 7)
 
-def plan(text,config,query,today,offer_options=False):
+def plan(text,config,query,today,offer_options=False,media_kind=''):
+    if media_kind == 'document':
+        return 'Recebi o documento. Você consegue me dizer como posso ajudar com ele?'
+    if media_kind == 'photo':
+        return 'Recebi sua foto. Você consegue me dizer como posso ajudar?'
     integration='/usr/local/libexec/atendimento-piloto-integracao'
     if integration not in sys.path:sys.path.append(integration)
     from policy import classify,artwork_quote
@@ -41,6 +45,11 @@ def plan(text,config,query,today,offer_options=False):
     if greeting(text):
         return 'Olá! Você quer agendar um horário ou posso ajudar com alguma dúvida?'
     if re.search(r'\b(nao|nunca|cancele?\w*|reclam\w*|ferida|alerg\w*|sangr\w*|dor|coceira|outro numero|pix|estorno|reembolso|atendente|humano|parceria|divulgacao)\b',words):return None
+    if words in {'sim','pode'}:
+        return 'Você consegue me dizer a que você se refere? Assim eu confiro direitinho.'
+    if (re.search(r'\bjp\b',words) and re.search(r'\b(protese|colocar|nova)\b',words)
+        and re.search(r'\b(marcar|horario|agenda)\b',words)):
+        return 'Entendi. Preciso verificar com a equipe se o JP pode atender esse caso. Qual dia ou período fica melhor para você?'
     options=dict(intent='auto',service='',professional='',date='')
     intent,service,prof,_=classify(text,options,config)
     if intent=='sensitive':return None
@@ -103,6 +112,34 @@ def slot_query(params):
         sock.sendall(json.dumps(dict(op='public-slots',params=params)).encode()+b'\n')
         return json.loads(sock.makefile('rb').readline(8192))
 
+def media_type(message):
+    if not isinstance(message,dict):return ''
+    if isinstance(message.get('documentMessage'),dict):return 'document'
+    if isinstance(message.get('imageMessage'),dict):return 'photo'
+    return ''
+
+def followup_marker(conf,seq,mid,record,jid,fingerprint,now):
+    """Allow only an explicitly bound, still-current private follow-up.
+
+    The separate marker does not bypass identity, newer-message, team, receipt,
+    or downstream dispatch checks. It merely makes a named current case eligible
+    for the existing producer after its normal one-hour intake window.
+    """
+    marker=conf/'private-followups.json'
+    if not marker.is_file():return None
+    try:
+        items=json.loads(marker.read_bytes()).get('cases',[])
+    except (OSError,ValueError):return None
+    for item in items:
+        if not isinstance(item,dict):continue
+        if (item.get('seq'),item.get('mid'),item.get('record'),item.get('jid'),item.get('fingerprint')) != (seq,mid,record,jid,fingerprint):continue
+        until=item.get('until')
+        if isinstance(until,(int,float)) and now<=until:return item
+    return None
+
+def approved_followup(conf,seq,mid,record,jid,fingerprint,now):
+    return followup_marker(conf,seq,mid,record,jid,fingerprint,now) is not None
+
 def operator_available(seq):
     with socket.socket(socket.AF_UNIX) as sock:
         sock.settimeout(5)
@@ -122,15 +159,16 @@ def publish(root,conf,db,queue,ledger,read,execution):
     now=time.time()
     high=queue.execute('SELECT max(seq) FROM receipts').fetchone()[0]
     if db.execute('SELECT seq FROM cursor WHERE slot=1').fetchone()!=(high,) or db.execute('SELECT seq FROM team_cursor WHERE slot=1').fetchone()!=(high,):return
-    sql="""SELECT c.seq,c.message_id,c.record_id,c.envelope_pos,c.item_pos,c.content_sha256,c.address_hashes,c.received_at
-      FROM captured c JOIN core_links l ON l.capture=c.rowid
-      WHERE c.kind='text' AND c.disposition!='changed_review' AND l.status IN ('identity_review','visit_review')
+    sql="""SELECT c.seq,c.message_id,c.record_id,c.envelope_pos,c.item_pos,c.content_sha256,c.address_hashes,c.received_at,c.kind,l.status,t.conversation
+      FROM captured c JOIN core_links l ON l.capture=c.rowid LEFT JOIN triage_cases t ON t.capture=c.rowid
+      WHERE c.kind IN ('text','other') AND c.disposition!='changed_review' AND l.status IN ('identity_review','visit_review','human_review')
         AND (c.seq=? OR (c.seq>? AND ?)) ORDER BY c.seq DESC LIMIT 30"""
     candidates=[]
-    for seq,mid,rid,ei,mi,fp,addresses,received in db.execute(sql,(case['seq'],config['after'],int(config['general']))):
+    for seq,mid,rid,ei,mi,fp,addresses,received,captured_kind,link_status,ticket in db.execute(sql,(case['seq'],config['after'],int(config['general']))):
         stamp=dt.datetime.fromisoformat(received.replace('Z','+00:00')).timestamp()
         exception=seq==case['seq'] and rid==case['record'] and mid==case['mid']
-        if not 0<=now-stamp<=(86400 if exception else 3600) or exception and now>case['until']:continue
+        if now<stamp:continue
+        if exception and now>case['until']:continue
         source=cap.digest(json.dumps(['central-event-v1','reply',mid],separators=(',',':')))
         if ledger.execute('SELECT 1 FROM dispatch_attempts WHERE source=? LIMIT 1',(source,)).fetchone():continue
         _,raw=read(rid)
@@ -140,10 +178,19 @@ def publish(root,conf,db,queue,ledger,read,execution):
         if env.get('instance')!=cap.INSTANCE or key.get('fromMe') is not False or key.get('id')!=mid or key.get('participant'):continue
         if not re.fullmatch(r'55[1-9]\d{9,10}@s\.whatsapp\.net',jid):continue
         if exception and jid!=case['jid']:continue
-        kind,disp,quote,text=cap.classify(msg.get('message') or {})
+        raw_message=msg.get('message') or {}
+        kind,disp,quote,text=cap.classify(raw_message)
         aliases=set(json.loads(addresses))
-        if kind!='text' or quote or not isinstance(text,str) or len(text)>500 or cap.digest(jid) not in aliases:continue
+        medium=media_type(raw_message)
+        if kind!=captured_kind or quote or cap.digest(jid) not in aliases:continue
+        if kind=='text' and (not isinstance(text,str) or len(text)>500):continue
+        if kind=='other' and not medium:continue
         if cap.digest(json.dumps([kind,disp,quote,text,sorted(aliases)],ensure_ascii=False))!=fp:continue
+        approval=followup_marker(conf,seq,mid,rid,jid,fp,now)
+        approved=approval is not None
+        if not 0<=now-stamp<=(86400 if exception else 3600) and not approved:continue
+        if link_status=='human_review' and not approved:continue
+        if link_status=='human_review' and not isinstance(ticket,int):continue
         ts=msg.get('messageTimestamp')
         if not str(ts).isdigit() or abs(int(ts)-stamp)>180:continue
         if exception:aliases.update(case['aliases'])
@@ -176,15 +223,23 @@ def publish(root,conf,db,queue,ledger,read,execution):
                 answer=learned['answer']
             else:
                 question=contextual_question(text,seq,stamp,jid,aliases,db,ledger) if not exception and (conf/'published-answers.json').is_file() else text
+                if approved and isinstance(approval.get('context'),str) and 1<=len(approval['context'].strip())<=500:
+                    question=approval['context'].strip()
                 if not exception and question==text:
                     question=booking_continuation(text,seq,stamp,jid,aliases,db,ledger,read,config)
-                answer=PREFERENCE if exception else plan(question,config,slot_query,dt.datetime.now(CUIABA).date(),offer_options=question!=text)
+                context_day=dt.datetime.fromtimestamp(stamp,CUIABA).date() if approved and question!=text else dt.datetime.now(CUIABA).date()
+                answer=PREFERENCE if exception else plan(question,config,slot_query,context_day,offer_options=question!=text,media_kind=medium)
+            # Hermes is a durable canary candidate only; all legacy gates and dispatch remain below.
+            from hermes_public_requests import candidate as hermes_candidate
+            if not exception and not learned and operator_available(seq):
+                answer=hermes_candidate(conf,db,ledger,seq,mid,jid,text,answer)
             if not answer or not operator_available(seq):continue
         except (OSError,ValueError,http.client.HTTPException):
             # The private case remains open. Continue processing unrelated agenda replies.
             continue
         if queue.execute('SELECT max(seq) FROM receipts').fetchone()!=(high,):break
-        candidates.append(dict(seq=seq,mid=mid,record=rid,fp=fp,number=jid.split('@')[0],answer=answer,exception=exception,received=received))
+        candidates.append(dict(seq=seq,mid=mid,record=rid,fp=fp,number=jid.split('@')[0],answer=answer,exception=exception,
+                               native_followup=approved,triage_ticket=ticket if approved else None,received=received))
         if learned:
             candidates[-1]['knowledge']={k:learned[k] for k in ('revision','topic','source')}
             db.execute('CREATE TABLE IF NOT EXISTS kb_proposals(seq INTEGER PRIMARY KEY,revision TEXT,topic TEXT,source TEXT,execution TEXT)')
